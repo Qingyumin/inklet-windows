@@ -107,7 +107,7 @@ export class SourceEditor {
             }
             if (this.view?.hasFocus && (update.selectionSet || update.docChanged)) {
               const selection = update.state.selection.main;
-              options.selection(selection.from, selection.to);
+              options.selection(selection.from, this.hasTextSelection ? selection.to : selection.from);
               if (options.typewriter() && !update.transactions.some(transaction => transaction.annotation(synchronized))) requestAnimationFrame(() => this.view.dispatch({ effects: EditorView.scrollIntoView(selection.head, { y: 'center' }) }));
             }
           }),
@@ -133,6 +133,10 @@ export class SourceEditor {
     this.view.dispatch({ selection: { anchor: Math.min(from, end), head: Math.min(to, end) }, annotations: synchronized.of(true), effects: scroll ? EditorView.scrollIntoView(Math.min(from, end), { y: 'center' }) : [] });
   }
   get selection() { return this.view.state.selection.main; }
+  get hasTextSelection() {
+    const selection = this.view.state.selection.main;
+    return !selection.empty && this.view.state.sliceDoc(selection.from, selection.to).trim().length > 0;
+  }
   get anchor() { return this.view.coordsAtPos(this.view.state.selection.main.from); }
   get topPosition() {
     const visible = this.view.scrollDOM.getBoundingClientRect();

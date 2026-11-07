@@ -12,19 +12,19 @@ export function textAlignment(value) {
   return ['left', 'center', 'right', 'justify', 'start', 'end'].includes(alignment) ? alignment : null;
 }
 
-function htmlAlignment(node, fallback = null) {
+export function htmlAlignment(node, fallback = null) {
   let alignment = textAlignment(attribute(node, 'align')) || fallback;
   for (const match of (attribute(node, 'style') || '').matchAll(/(?:^|;)\s*text-align\s*:\s*(left|center|right|justify|start|end)\s*(?:!important\s*)?(?=;|$)/gi)) alignment = match[1].toLowerCase();
   return alignment;
 }
 
-function safeLink(value) {
+export function safeLink(value) {
   if (!value || /[\u0000-\u0020\u007f]/.test(value)) return null;
   if (/^(?:https?:|mailto:)/i.test(value) || (!/^[a-z][a-z\d+.-]*:/i.test(value) && !value.startsWith('//'))) return value;
   return null;
 }
 
-function cellContent(cell, schema) {
+export function cellContent(cell, schema) {
   const paragraphs = [];
   let inline = [];
   let paragraphAlignment = null;
@@ -36,6 +36,10 @@ function cellContent(cell, schema) {
     paragraphAlignment = null;
   };
   const visit = (node, marks = [], inheritedAlignment = null) => {
+    if (node.nodeName === '#comment') {
+      if (schema.nodes.html_comment_inline) inline.push(schema.nodes.html_comment_inline.create({ raw: '<!--' + node.data + '-->' }));
+      return;
+    }
     if (node.nodeName === '#text') {
       const text = node.value.replace(/[\t\r\n\f ]+/g, ' ');
       if (text) inline.push(schema.text(text, marks));
@@ -52,6 +56,10 @@ function cellContent(cell, schema) {
     }
     const alignment = htmlAlignment(node, inheritedAlignment);
     if (blockTags.has(tag)) { flush(); paragraphAlignment = alignment; }
+    if (tag === 'a' && schema.nodes.html_anchor_inline) {
+      const id = attribute(node, 'id') || attribute(node, 'name');
+      if (id) inline.push(schema.nodes.html_anchor_inline.create({ id, raw: '<a id="' + escapeHtml(id) + '"></a>' }));
+    }
     let nextMarks = marks;
     if (markTags[tag]) nextMarks = schema.marks[markTags[tag]].create().addToSet(marks);
     if (tag === 'a') {
@@ -138,6 +146,7 @@ export function htmlTableSource(table) {
       return text;
     }
     if (node.type.name === 'hard_break') return '<br>';
+    if (node.type.name === 'html_comment_inline' || node.type.name === 'html_anchor_inline') return node.attrs.raw;
     if (node.type.name === 'image') return '<img src="' + escapeHtml(node.attrs.src) + '" alt="' + escapeHtml(node.attrs.alt || '') + '">';
     if (node.type.name === 'math_inline') return escapeHtml('$' + node.attrs.tex + '$');
     let content = '';

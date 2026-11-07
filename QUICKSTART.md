@@ -1,4 +1,4 @@
-# Inklet 0.11.4 for Windows
+# Inklet 0.11.9 for Windows
 
 Extract the complete ZIP, keep all files together, and run Inklet.exe.
 Save your documents and close the previous version before switching versions.
@@ -6,6 +6,13 @@ Settings and recovery data are stored locally; do not delete them during an upda
 
 - Windows 10/11 x64, .NET Framework 4.7.2+ and WebView2 Runtime are required.
 - Source and visual panes both support editing; Ctrl+S saves and Ctrl+Z undoes.
+- Use the speaker button to read the selected text or start from the current paragraph. Pause, resume, previous/next segment and stop controls are available.
+- Reading settings offer 16 online voices, 0.75x-2.0x speed, four pitch presets, a voice preview and heading/timer stop modes. Pitch presets are not emotional speaking styles.
+- Online narration sends the current and prefetched text segments to Microsoft or your configured speech endpoint. Do not send sensitive documents without authorization. Offline system-voice fallback depends on voices installed on your computer.
+- A self-hosted OpenAI-compatible /v1/audio/speech endpoint can be configured separately. No local TTS model or server is bundled, and individual model integrations are not verified. Optional API keys are currently stored unencrypted in local settings.
+- Speech preprocessing can omit annotations or code; compare with the original for proofreading. Pronunciation and prosody are not guaranteed for every word.
+- Background swatches are compact. Highlight tools appear only for a nonempty text selection, not a cursor alone.
+- Supported HTML covers render in the reader, comments stay hidden and explicit anchors remain navigable. Arbitrary HTML/CSS and scripts are not executed.
 - Use the outline or search to navigate. Numbered section references can be clicked.
 - Leading YAML metadata is displayed as a property table; edit it in the source pane.
 - Wide tables retain their horizontal position after search and offscreen reloading.
@@ -19,6 +26,7 @@ Settings and recovery data are stored locally; do not delete them during an upda
 - Keep backups and try important workflows on copies first.
 
 This build is unsigned; Windows may show an unknown-publisher warning.
-Source and releases: https://github.com/VincentZhang-code/inklet-windows
+The WebView2 compatibility settings disable renderer accessibility and can affect screen readers.
+Source and releases: https://github.com/Qingyumin/inklet-windows
 
-The application is licensed under MIT. See LICENSE and licenses/ for notices.
+The application is licensed under MIT. See LICENSE and licenses/ for notices. Online speech services and external model weights have their own terms and licenses.

@@ -4,7 +4,7 @@ import { keymap } from 'prosemirror-keymap';
 import { baseKeymap, toggleMark, setBlockType, wrapIn, chainCommands } from 'prosemirror-commands';
 import { wrapInList, splitListItem, sinkListItem, liftListItem } from 'prosemirror-schema-list';
 import { tableEditing, columnResizing, goToNextCell, addRowAfter, addColumnAfter, deleteRow, deleteColumn, deleteTable } from 'prosemirror-tables';
-import { parseDocument, richChange, plainTextChange, schema, prosePosition, sourcePosition, documentHeadings } from './markdown.js';
+import { parseDocument, richChange, plainTextChange, schema, prosePosition, sourcePosition, documentHeadings, fragmentTarget } from './markdown.js';
 import { highlightStyle } from './source-editor.js';
 import { renderOnVisible } from './renderers.js';
 import { codeLanguages, codeSpans, codeStyle, normalizeLanguage, onCodeHighlightingReady } from './code-highlighting.js';
@@ -77,7 +77,11 @@ export class RichEditor {
         controlsObserver = new MutationObserver(attachControls);
         controlsObserver.observe(dom, { childList: true });
         attachControls();
-        disposeActivation = bindFigureActivation(dom, open, edit);
+        if (options.diagramActivation === 'host') {
+          const activate = event => { if (!codeButton.contains(event.target)) open(); };
+          dom.addEventListener('click', activate);
+          disposeActivation = () => dom.removeEventListener('click', activate);
+        } else disposeActivation = bindFigureActivation(dom, open, edit);
       } else dom.addEventListener('dblclick', edit);
       dom.addEventListener('keydown', event => { if (event.target === dom && (event.key === 'Enter' || (kind === 'mermaid' && event.key === ' '))) { event.preventDefault(); open(); } });
       return {
@@ -180,11 +184,23 @@ export class RichEditor {
       },
       handleClickOn: (view, position, node, nodePosition, event) => {
         const link = event.target.closest('a');
+        if (link?.getAttribute('href')?.startsWith('#')) {
+          event.preventDefault();
+          this.navigateFragment(link.getAttribute('href'));
+          return true;
+        }
         if (link && (event.ctrlKey || event.metaKey)) { options.link(link.href); return true; }
         return false;
       },
     });
+    this.view.dom.style.overflowAnchor = 'none';
     element.addEventListener('pointerdown', event => {
+      const fragment = event.target.closest('a[href^="#"]:not([data-heading-index])');
+      if (fragment && event.button === 0) {
+        event.preventDefault(); event.stopPropagation();
+        this.navigateFragment(fragment.getAttribute('href'));
+        return;
+      }
       const link = event.target.closest('.document-toc a[data-heading-index]');
       if (link && event.button === 0) {
         event.preventDefault(); event.stopPropagation();
@@ -208,7 +224,13 @@ export class RichEditor {
     this.flush();
     const heading = resolveHeadingIntent(documentHeadings(this.parsed.doc), intent);
     const range = heading && this.parsed.ranges.find(item => item.position === heading.position);
-    if (range) this.options.navigate(range.from);
+    if (heading) this.options.navigate(range?.from ?? sourcePosition(this.parsed, heading.position + 1));
+  }
+
+  navigateFragment(href) {
+    this.flush();
+    const position = fragmentTarget(this.parsed.doc, href);
+    if (position !== null) this.options.navigate(sourcePosition(this.parsed, position));
   }
 
   destroy() { this.tables.destroy(); this.disposeHighlighting(); clearTimeout(this.timer); this.view.destroy(); }
@@ -217,19 +239,25 @@ export class RichEditor {
     const marks = this.options.marks();
     const cached = this.decorationCache;
     if (!cached || cached.doc !== state.doc || cached.parsed !== this.parsed || cached.marks !== marks || !cached.selection.eq(state.selection)) {
-      this.decorationCache = { doc: state.doc, parsed: this.parsed, marks, selection: state.selection, decorations: this.documentDecorations(state, marks) };
+      this.decorationCache = { doc: state.doc, parsed: this.parsed, marks, selection: state.selection, ...this.documentDecorations(state, marks) };
     }
+    const unloaded = this.decorationCache.unloadedTables;
     const matches = [];
     for (const match of this.options.matches()) {
       const from = prosePosition(this.parsed, match.from);
       const to = prosePosition(this.parsed, match.to);
-      if (from < to) matches.push(Decoration.inline(from, to, { class: 'search-match' }));
+      if (from < to && !unloaded.some(table => from < table.to && to > table.from)) matches.push(Decoration.inline(from, to, { class: 'search-match' }));
+    }
+    if (Number.isInteger(this.speakingPosition)) {
+      const speakingNode = state.doc.nodeAt(this.speakingPosition);
+      if (speakingNode) matches.push(Decoration.node(this.speakingPosition, this.speakingPosition + speakingNode.nodeSize, { 'data-speaking': 'true' }));
     }
     return matches.length ? this.decorationCache.decorations.add(state.doc, matches) : this.decorationCache.decorations;
   }
 
   documentDecorations(state, marks) {
     const output = [];
+    const unloadedTables = [];
     for (const heading of documentHeadings(state.doc)) {
       const node = state.doc.nodeAt(heading.position);
       output.push(Decoration.node(heading.position, heading.position + node.nodeSize, { id: heading.id }));
@@ -239,6 +267,7 @@ export class RichEditor {
         const end = position + node.nodeSize;
         const selected = [state.selection.anchor, state.selection.head].some(value => value > position && value < end);
         const loaded = state.doc.content.size < 200000 || this.tables.visible.has(node) || selected;
+        if (!loaded) unloadedTables.push({ from: position, to: end });
         output.push(Decoration.node(position, end, { 'data-table-active': String(loaded) }));
         return false;
       }
@@ -255,7 +284,7 @@ export class RichEditor {
     }
     const active = this.parsed.ranges.find(range => state.selection.from >= range.position && state.selection.from <= range.end);
     if (active) output.push(Decoration.node(active.position, active.end, { 'data-active': 'true' }));
-    return DecorationSet.create(state.doc, output);
+    return { decorations: DecorationSet.create(state.doc, output), unloadedTables };
   }
 
   dispatch(transaction) {
@@ -270,7 +299,9 @@ export class RichEditor {
     this.view.updateState(next);
     if (transaction.docChanged) this.refreshContents();
     if (this.view.hasFocus()) {
-      this.options.selection(sourcePosition(this.parsed, next.selection.from), sourcePosition(this.parsed, next.selection.to, -1));
+      const from = sourcePosition(this.parsed, next.selection.from);
+      const to = this.hasTextSelection ? sourcePosition(this.parsed, next.selection.to, -1) : from;
+      this.options.selection(from, to);
       if (this.options.typewriter() && !transaction.getMeta('inklet-navigation') && (transaction.docChanged || transaction.selectionSet)) requestAnimationFrame(() => {
         try {
           const coords = this.view.coordsAtPos(this.view.state.selection.head);
@@ -305,7 +336,32 @@ export class RichEditor {
     this.options.parsed?.(this.parsed.doc);
   }
   refreshSearch() { this.view.updateState(this.view.state); }
-  refresh() { this.decorationCache = null; this.view.updateState(this.view.state); for (const refresh of this.visualViews) refresh(); }
+  setSpeakingPosition(position = null) {
+    if (this.speakingElement) {
+      this.speakingElement.removeAttribute('data-speaking');
+      this.speakingElement = null;
+    }
+    this.speakingPosition = Number.isInteger(position) ? position : null;
+    this.view.updateState(this.view.state);
+    if (this.speakingPosition !== null) {
+      const dom = this.view.nodeDOM(this.speakingPosition);
+      if (dom?.setAttribute) {
+        dom.setAttribute('data-speaking', 'true');
+        this.speakingElement = dom;
+      }
+      return dom;
+    }
+    return null;
+  }
+  refresh() {
+    this.decorationCache = null;
+    this.view.updateState(this.view.state);
+    if (this.speakingPosition !== null) {
+      const dom = this.view.nodeDOM(this.speakingPosition);
+      if (dom?.setAttribute) { dom.setAttribute('data-speaking', 'true'); this.speakingElement = dom; }
+    }
+    for (const refresh of this.visualViews) refresh();
+  }
   focus() { this.view.focus(); }
   reveal(from, to = from, select = true, scroll = true) {
     this.flush();
@@ -333,6 +389,10 @@ export class RichEditor {
     const done = command(this.view.state, this.view.dispatch, this.view);
     this.view.focus();
     return done;
+  }
+  get hasTextSelection() {
+    const { selection, doc } = this.view.state;
+    return selection instanceof TextSelection && !selection.empty && doc.textBetween(selection.from, selection.to, '').trim().length > 0;
   }
   get anchor() { return this.view.coordsAtPos(this.view.state.selection.from); }
   get topPosition() {

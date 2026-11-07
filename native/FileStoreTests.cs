@@ -345,6 +345,14 @@ public static class FileStoreTests {
             File.WriteAllText(diagnostics.LogPath, new string('x', RuntimeDiagnostics.MaximumBytes));
             diagnostics.Append(diagnostic);
             Assert(new FileInfo(diagnostics.LogPath).Length < RuntimeDiagnostics.MaximumBytes && File.Exists(diagnostics.LogPath + ".previous"), "diagnostic logs rotate at the configured size limit");
+            Assert(SpeechService.GenerateSecMsGecV2(1700000000.0) == "2CD23A2CA0B2595A-F3C846C370E05F9CC83ACC5F995C5F5D87A4D0F14CE8936A0F902E64099E38A2" &&
+                SpeechService.GenerateSecMsGecV2(1794000123.0) == "6EA6AF6A0550F520-17E5A544A1EFE811EA5248AFBD9780637964201A6D3A15ADE53A30AB9D066A4F", "speech token generator matches Edge Neural TTS v2 vectors");
+            string ssml = SpeechService.FormatSsml("A & B <C>", "zh-CN-YunyangNeural", "1.25", "-6Hz");
+            Assert(ssml.Contains("voice name='zh-CN-YunyangNeural'") && ssml.Contains("rate='+25%'") && ssml.Contains("pitch='-6Hz'") && ssml.Contains("A &amp; B &lt;C&gt;"), "speech SSML escapes XML entities and normalizes voice, rate and pitch");
+            string multiSsml = SpeechService.FormatSsml("中英混读测试", "en-US-AvaMultilingualNeural", "1.0", "+4Hz");
+            Assert(multiSsml.Contains("voice name='en-US-AvaMultilingualNeural'") && multiSsml.Contains("xml:lang='zh-CN'") && multiSsml.Contains("pitch='+4Hz'"), "multilingual neural voice keeps zh-CN reading context");
+            string twSsml = SpeechService.FormatSsml("书卷朗读", "zh-TW-HsiaoChenNeural", "1.0");
+            Assert(twSsml.Contains("xml:lang='zh-TW'"), "traditional Chinese voice uses zh-TW xml:lang");
             Console.WriteLine("INKLET_FILE_TESTS_OK " + checks);
             return 0;
         } catch (Exception error) {

@@ -6,7 +6,7 @@ import '@fontsource/literata/600.css';
 import 'prosemirror-view/style/prosemirror.css';
 import 'prosemirror-tables/style/tables.css';
 import './inklet.css';
-import { createIcons, FilePlus2, FolderOpen, Save, SaveAll, Download, PanelLeftClose, PanelLeftOpen, Code2, BookOpen, Search, Settings2, Info, Focus, AlignCenter, Undo2, Redo2, Bold, Italic, Strikethrough, Heading2, List, ListOrdered, Quote, ImagePlus, Table2, Sigma, Workflow, Link, Highlighter, X, ChevronUp, ChevronDown, Eraser, Columns2, Rows3, Trash2, FileText, MoreHorizontal, Printer, Check, ZoomIn, ZoomOut, ArrowUpRight, History, Maximize, ArrowUpToLine, CornerUpLeft } from 'lucide';
+import { createIcons, FilePlus2, FolderOpen, Save, SaveAll, Download, PanelLeftClose, PanelLeftOpen, Code2, BookOpen, Search, Settings2, Info, Focus, AlignCenter, Undo2, Redo2, Bold, Italic, Strikethrough, Heading2, List, ListOrdered, Quote, ImagePlus, Table2, Sigma, Workflow, Link, Highlighter, X, ChevronUp, ChevronDown, Eraser, Columns2, Rows3, Trash2, FileText, MoreHorizontal, Printer, Check, ZoomIn, ZoomOut, ArrowUpRight, History, Maximize, ArrowUpToLine, CornerUpLeft, Volume2, Pause, Play, Square, SkipBack, SkipForward } from 'lucide';
 import { DocumentSession, highlightColors, minimalChange, serializeHighlights, restoreHighlights } from '../../core/document.mjs';
 import { RecoveryWriter } from '../../core/recovery.mjs';
 import { DocumentWorkspace, createDocumentState } from '../../core/workspace.mjs';
@@ -24,8 +24,9 @@ import { groupSearchMatches } from './search-engine.js';
 import { renderMarkup } from './renderers.js';
 import { interfaceFamilies, interfaceThemes, paperFamilies, paperThemes as themes, paneCodeColors } from './appearance.js';
 import { isImagePlaceholder } from './image-references.js';
+import { SpeechController, speechVoices, speechPitches, speechStopModes, renderSpeechVoiceOptions, defaultSpeechVoice, defaultSpeechRate, defaultSpeechPitch, normalizeSpeechVoice, normalizeSpeechRate, normalizeSpeechPitch } from './speech-reader.js';
 
-const iconSet = { FilePlus2, FolderOpen, Save, SaveAll, Download, PanelLeftClose, PanelLeftOpen, Code2, BookOpen, Search, Settings2, Info, Focus, AlignCenter, Undo2, Redo2, Bold, Italic, Strikethrough, Heading2, List, ListOrdered, Quote, ImagePlus, Table2, Sigma, Workflow, Link, Highlighter, X, ChevronUp, ChevronDown, Eraser, Columns2, Rows3, Trash2, FileText, MoreHorizontal, Printer, Check, ZoomIn, ZoomOut, ArrowUpRight, History, Maximize, ArrowUpToLine, CornerUpLeft };
+const iconSet = { FilePlus2, FolderOpen, Save, SaveAll, Download, PanelLeftClose, PanelLeftOpen, Code2, BookOpen, Search, Settings2, Info, Focus, AlignCenter, Undo2, Redo2, Bold, Italic, Strikethrough, Heading2, List, ListOrdered, Quote, ImagePlus, Table2, Sigma, Workflow, Link, Highlighter, X, ChevronUp, ChevronDown, Eraser, Columns2, Rows3, Trash2, FileText, MoreHorizontal, Printer, Check, ZoomIn, ZoomOut, ArrowUpRight, History, Maximize, ArrowUpToLine, CornerUpLeft, Volume2, Pause, Play, Square, SkipBack, SkipForward };
 const icon = name => `<i data-lucide="${name}" aria-hidden="true"></i>`;
 const button = (name, label, action, extra = '') => `<button type="button" class="icon-button" title="${label}" aria-label="${label}" data-action="${action}" ${extra}>${icon(name)}</button>`;
 const swatchNames = { yellow: '淡黄', green: '浅绿', blue: '天蓝', pink: '浅粉', orange: '淡橙' };
@@ -37,6 +38,11 @@ const readingFonts = {
   kai: "'LXGW WenKai', 'KaiTi', 'STKaiti', 'Noto Serif SC', 'SimSun', serif",
 };
 const releaseNotes = [
+  ['0.11.9', '优化朗读防拆词韵律，扩充16款音色与选段试听', '2026-11-07'],
+  ['0.11.8', '新增专业书籍神经网络朗读，收窄设置背景色块', '2026-11-07'],
+  ['0.11.7', '阅读高亮栏仅在划词选中文字时出现，纯光标不弹出', '2026-10-31'],
+  ['0.11.6', '修复Ctrl+F偶发无障碍行内布局崩溃', '2026-10-27'],
+  ['0.11.5', '支持HTML封面显示，隐藏注释并保留锚点', '2026-10-22'],
   ['0.11.4', '隔离搜索刷新，图表八成显示与单双击分工', '2026-10-21'],
   ['0.11.3', '保留序号换行，图片占位与缺图保存可确认', '2026-10-19'],
   ['0.11.2', '修复大文档表格加载与宽表横向滚动回弹', '2026-10-17'],
@@ -73,12 +79,13 @@ const startupDocument = startupSession ? { ...startupSession.info, id: startupSe
 let documentSession = startupSession ? DocumentSession.restore(startupSession.session) : new DocumentSession(startupDocument.text || '');
 const startupHighlights = restoreHighlights(documentSession.source, startupDocument.annotations?.marks, !!startupDocument.hash && startupDocument.annotations?.textHash === startupDocument.hash);
 if (!startupSession) { documentSession.highlights = startupHighlights.highlights; documentSession.unresolved = startupHighlights.unresolved; }
-let settings = { leftTheme: 'white', rightTheme: 'white', backgroundPaletteVersion: 1, interfaceTheme: 'jade', ctrlWheelZoom: true, separateWindows: false, embedImages: false, restoreReadingPosition: false, fontSize: 18, readingFont: 'book', lineHeight: 2.05, paragraphGap: 1, readingWidth: 720, paperTexture: true, opacity: 0.3, source: true, rich: true, sidebar: true, outlineSide: 'left', shortcuts: {}, focus: false, typewriter: false, syncScroll: true, searchResults: false, compress: false };
+let settings = { leftTheme: 'white', rightTheme: 'white', backgroundPaletteVersion: 1, interfaceTheme: 'jade', ctrlWheelZoom: true, separateWindows: false, embedImages: false, restoreReadingPosition: false, fontSize: 18, readingFont: 'book', lineHeight: 2.05, paragraphGap: 1, readingWidth: 720, paperTexture: true, opacity: 0.3, source: true, rich: true, sidebar: true, outlineSide: 'left', shortcuts: {}, focus: false, typewriter: false, syncScroll: true, searchResults: false, compress: false, speechVoice: defaultSpeechVoice, speechRate: defaultSpeechRate, speechPitch: defaultSpeechPitch, speechStopMode: 'continuous', speechSkipCode: true, speechProvider: 'edge', speechEndpoint: '', speechModel: 'tts-1', speechCustomVoice: 'alloy', speechApiKey: '' };
 let documentInfo = { name: startupDocument.name, path: startupDocument.path || null, hash: startupDocument.hash || null };
 let savedRevision = startupSession ? startupSession.savedRevision : startupDocument.restored ? -1 : 0;
 let activePane = 'rich';
 let selection = { from: 0, to: 0 };
 let results = [];
+let paintedResults = [];
 let totalResults = 0;
 let selectedResult = -1;
 let resultsRevision = -1;
@@ -180,8 +187,18 @@ document.querySelector('#app').innerHTML = `
           <span class="tool-separator"></span>${button('list', '无序列表', 'bullet')}${button('list-ordered', '有序列表', 'ordered')}${button('quote', '引用', 'quote')}${button('link', '插入链接', 'link')}
           <span class="tool-separator"></span>${button('image-plus', '插入图片', 'image')}${button('table-2', '插入表格', 'table')}${button('code-2', '代码块', 'code-block')}${button('sigma', '数学公式', 'math')}${button('workflow', 'Mermaid 图表', 'diagram')}
         </div>
-        <div class="view-tools">${button('focus', '专注模式', 'focus')}${button('align-center', '打字机模式', 'typewriter')}<span class="tool-separator"></span>${button('code-2', '源码视图', 'source')}${button('book-open', '阅读编辑视图', 'rich')}</div>
+        <div class="view-tools">${button('volume-2', '书籍朗读', 'read-aloud', 'aria-pressed="false"')}<span class="tool-separator"></span>${button('focus', '专注模式', 'focus')}${button('align-center', '打字机模式', 'typewriter')}<span class="tool-separator"></span>${button('code-2', '源码视图', 'source')}${button('book-open', '阅读编辑视图', 'rich')}</div>
       </div>
+      <section class="speech-panel" id="speech-panel" hidden aria-label="书籍朗读">
+        <div class="speech-status-group">${icon('volume-2')}<span id="speech-status" role="status">正在朗读</span><span id="speech-preview"></span></div>
+        <div class="speech-controls">
+          <select id="speech-bar-voice" class="speech-select" aria-label="朗读音色">${renderSpeechVoiceOptions()}</select>
+          <select id="speech-bar-pitch" class="speech-select speech-pitch-select" aria-label="朗读语调">${speechPitches.map(([value, label]) => `<option value="${value}">${label.replace(/（.*）/, '')}</option>`).join('')}</select>
+          <select id="speech-bar-rate" class="speech-select speech-rate-select" aria-label="朗读倍速">${[0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2].map(rate => `<option value="${rate}">${rate.toFixed(2).replace(/\.?0+$/, '')}x</option>`).join('')}</select>
+          <select id="speech-bar-stop-mode" class="speech-select speech-stop-select" aria-label="朗读停止方式">${speechStopModes.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select>
+          ${button('skip-back', '上一段', 'speech-prev')}${button('pause', '暂停朗读', 'speech-toggle', 'id="speech-toggle-button"')}${button('skip-forward', '下一段', 'speech-next')}${button('square', '停止朗读', 'speech-stop')}
+        </div>
+      </section>
       <section class="search-panel" id="search-panel" hidden aria-label="查找与替换">
         <div class="search-line">${icon('search')}<input id="search-input" aria-label="查找内容" placeholder="查找" autocomplete="off"><button id="case-toggle" class="text-toggle" title="区分大小写" aria-label="区分大小写" aria-pressed="false">Aa</button><span id="search-count">0 处</span>${button('chevron-up', '上一个匹配', 'previous')}${button('chevron-down', '下一个匹配', 'next')}${button('x', '关闭查找', 'search-close')}</div>
         <div class="search-line"><input id="replace-input" aria-label="替换内容" placeholder="替换为"><button class="small-command" data-action="replace">替换</button><button class="small-command" data-action="replace-all">全部替换</button><small id="search-time"></small></div>
@@ -192,7 +209,7 @@ document.querySelector('#app').innerHTML = `
       <div class="editor-workspace" id="workspace">
         <section class="editor-pane source-pane" aria-label="源码面板"><div class="pane-heading"><span>MARKDOWN</span><div><span id="line-info">Ln 1, Col 1</span>${button('x', '关闭源码视图', 'source')}</div></div><div id="source-editor"></div></section>
         <div class="splitter" id="splitter" role="separator" aria-label="调整双栏宽度" aria-orientation="vertical" tabindex="0"></div>
-        <section class="editor-pane rich-pane" aria-label="阅读面板"><div class="pane-heading"><span>阅读与编辑</span><div>${button('arrow-up-to-line', '回到文首', 'reading-start')}${button('corner-up-left', '回到上次阅读位置', 'reading-return', 'id="reading-return-button" disabled')}</div></div><div id="rich-editor"></div></section>
+        <section class="editor-pane rich-pane" aria-label="阅读面板"><div class="pane-heading"><span>阅读与编辑</span><div>${button('volume-2', '朗读本文档', 'read-aloud', 'id="pane-read-aloud-button" aria-pressed="false"')}${button('arrow-up-to-line', '回到文首', 'reading-start')}${button('corner-up-left', '回到上次阅读位置', 'reading-return', 'id="reading-return-button" disabled')}</div></div><div id="rich-editor"></div></section>
         <div class="empty-workspace" id="empty-workspace" hidden>${icon('book-open')}<span>视图已关闭</span></div>
       </div>
       <aside id="search-results-panel" class="search-results-panel" aria-label="搜索结果" hidden><div class="search-results-heading"><h2>搜索结果</h2>${button('x', '关闭搜索结果', 'search-results-close')}</div><div id="search-results-summary" class="search-results-summary" role="status"></div><div id="search-results-list" class="search-results-list"></div></aside>
@@ -203,7 +220,7 @@ document.querySelector('#app').innerHTML = `
   <footer class="copyright-notice"><button type="button" class="history-trigger" data-action="open-history" aria-haspopup="dialog" aria-controls="history-dialog" title="历史记录">${icon('history')}<span>历史记录</span></button></footer>
   <dialog id="history-dialog" class="history-dialog" aria-labelledby="history-title"><form method="dialog"><div class="dialog-heading"><h2 id="history-title">历史记录</h2><button class="icon-button" aria-label="关闭历史记录">${icon('x')}</button></div><div id="history-list" class="history-list"></div><div class="dialog-footer"><span id="history-count" role="status"></span><button class="primary-command">关闭</button></div></form></dialog>
   <dialog id="history-error-dialog" class="history-error-dialog" aria-labelledby="history-error-title"><form method="dialog"><div class="dialog-heading"><h2 id="history-error-title">无法打开文件</h2><button class="icon-button" aria-label="关闭文件提示">${icon('x')}</button></div><div class="history-error-content"><p id="history-error-message"></p><p id="history-error-path"></p></div><div class="dialog-footer"><button class="primary-command">确定</button></div></form></dialog>
-  <div class="selection-tools" id="selection-tools" role="toolbar" aria-label="阅读高亮" hidden>${icon('highlighter')}${Object.entries(highlightColors).map(([name, color]) => `<button class="color-swatch" style="--swatch:${color}" data-color="${name}" title="${swatchNames[name]}高亮" aria-label="${swatchNames[name]}高亮"></button>`).join('')}<span class="tool-separator"></span>${button('eraser', '清除高亮', 'clear-highlight')}</div>
+  <div class="selection-tools" id="selection-tools" role="toolbar" aria-label="阅读高亮" hidden>${icon('highlighter')}${Object.entries(highlightColors).map(([name, color]) => `<button class="color-swatch" style="--swatch:${color}" data-color="${name}" title="${swatchNames[name]}高亮" aria-label="${swatchNames[name]}高亮"></button>`).join('')}<span class="tool-separator"></span>${button('eraser', '清除高亮', 'clear-highlight')}${button('volume-2', '朗读选中文字', 'speak-selection')}</div>
   <dialog id="settings-dialog" class="settings-dialog"><form method="dialog"><div class="dialog-heading"><h2>阅读设置</h2><button class="icon-button" aria-label="关闭设置">${icon('x')}</button></div><div class="settings-content">
     <fieldset><legend>客户端主题</legend><label class="select-setting family-setting" for="interface-family-input">色系<select id="interface-family-input">${familyOptions(interfaceFamilies)}</select></label><div class="interface-themes">${Object.entries(interfaceThemes).map(([key, theme]) => `<button type="button" class="interface-theme" data-interface-theme="${key}" aria-pressed="false"><span style="background:linear-gradient(135deg,${theme.base},${theme.secondary})"></span>${theme.name}</button>`).join('')}</div></fieldset>
     <label class="select-setting" for="outline-side-input">大纲位置<select id="outline-side-input"><option value="left">左侧</option><option value="right">右侧</option></select></label>
@@ -225,6 +242,24 @@ document.querySelector('#app').innerHTML = `
     <label class="checkbox-setting" id="separate-windows-setting"><input id="separate-windows-input" type="checkbox">打开 MD 时使用独立窗口</label>
     <label class="checkbox-setting"><input id="compress-input" type="checkbox">插入图片时压缩至最长边 1920 px</label>
     <label class="checkbox-setting"><input id="embed-images-input" type="checkbox">保存时内嵌图片到 MD</label>
+    <fieldset class="speech-settings">
+      <legend>书籍朗读</legend>
+      <label class="select-setting" for="speech-provider-input">语音引擎<select id="speech-provider-input"><option value="edge">内置神经网络有声书（免配置）</option><option value="openai">外接开源 TTS 接口（OpenAI 兼容）</option></select></label>
+      <label class="select-setting" for="speech-voice-input">朗读音色<select id="speech-voice-input">${renderSpeechVoiceOptions()}</select></label>
+      <label class="select-setting" for="speech-pitch-input">声线语调<select id="speech-pitch-input">${speechPitches.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label>
+      <label class="range-setting">朗读语速 <output id="speech-rate-output">1.00 倍</output><input id="speech-rate-input" type="range" min="0.75" max="2" step="0.05"></label>
+      <label class="select-setting" for="speech-stop-mode-input">停止方式<select id="speech-stop-mode-input">${speechStopModes.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label>
+      <label class="checkbox-setting"><input id="speech-skip-code-input" type="checkbox">朗读时略过行内英文代码与字段名（防拆词打断）</label>
+      <div id="speech-custom-fields" class="speech-custom-fields" hidden>
+        <label class="text-setting" for="speech-endpoint-input">接口地址（CosyVoice / GPT-SoVITS / Fish-Speech / Kokoro）<input id="speech-endpoint-input" type="url" placeholder="http://127.0.0.1:8000/v1/audio/speech" autocomplete="off"></label>
+        <div class="speech-custom-row">
+          <label class="text-setting" for="speech-model-input">模型名<input id="speech-model-input" type="text" placeholder="cosyvoice-v2" autocomplete="off"></label>
+          <label class="text-setting" for="speech-custom-voice-input">音色名<input id="speech-custom-voice-input" type="text" placeholder="中文女 / alloy" autocomplete="off"></label>
+        </div>
+        <label class="text-setting" for="speech-api-key-input">接口密钥（可选）<input id="speech-api-key-input" type="password" placeholder="本地免密可留空" autocomplete="off"></label>
+      </div>
+      <div class="speech-settings-actions"><button type="button" class="small-command" data-action="speech-preview">${icon('volume-2')} 试听当前音色</button></div>
+    </fieldset>
     <fieldset class="code-colors-settings"><legend>代码配色</legend><label class="select-setting" for="code-color-language">编程语言<select id="code-color-language"><option value="default">所有语言</option>${codeLanguages.filter(([value]) => value !== 'plaintext').map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label><div class="code-colors-grid">${Object.entries(codeColorLabels).map(([key, label]) => `<label>${label}<input type="color" data-code-color="${key}" aria-label="${label}颜色" value="${codeColorDefaults[key]}"></label>`).join('')}</div><button type="button" class="small-command" data-action="code-colors-reset">恢复代码默认配色</button></fieldset>
     <div class="system-settings" ${desktop ? '' : 'hidden'}><button type="button" class="small-command" data-action="default-app">${icon('arrow-up-right')} Markdown 默认打开方式</button></div>
   </div><div class="dialog-footer"><button class="primary-command">完成</button></div></form></dialog>
@@ -254,8 +289,8 @@ document.querySelector('#app').innerHTML = `
 `;
 createIcons({ icons: iconSet, attrs: { 'stroke-width': 1.7 } });
 const find = selector => document.querySelector(selector);
-const matchesForSource = () => results;
-const matchesForRich = () => selectedResult >= 250 ? [...results.slice(0, 250), results[selectedResult]] : results.slice(0, 250);
+const matchesForSource = () => paintedResults;
+const matchesForRich = () => selectedResult >= 250 && results[selectedResult] ? [...paintedResults.slice(0, 250), results[selectedResult]] : paintedResults.slice(0, 250);
 const common = {
   source: documentSession.source, marks: () => documentSession.highlights,
   codeColors: () => settings.codeColors || {},
@@ -331,6 +366,90 @@ const navigationResizeObserver = new ResizeObserver(scheduleOutlineFollow);
 navigationResizeObserver.observe(richEditor.view.dom);
 navigationResizeObserver.observe(richEditor.container);
 richEditor.container.addEventListener('contentvisibilityautostatechange', scheduleOutlineFollow, true);
+
+const speechController = new SpeechController({
+  getVoice: () => normalizeSpeechVoice(settings.speechVoice),
+  getRate: () => normalizeSpeechRate(settings.speechRate),
+  getPitch: () => normalizeSpeechPitch(settings.speechPitch),
+  getStopMode: () => settings.speechStopMode || 'continuous',
+  getSkipCode: () => settings.speechSkipCode !== false,
+  getCustomConfig: () => ({
+    provider: settings.speechProvider || 'edge',
+    endpoint: settings.speechEndpoint || '',
+    model: settings.speechModel || 'tts-1',
+    customVoice: settings.speechCustomVoice || 'alloy',
+    apiKey: settings.speechApiKey || '',
+  }),
+  canUseNeural: () => desktop || typeof window.__inkletSynthesizeSpeech === 'function',
+  synthesize: args => typeof window.__inkletSynthesizeSpeech === 'function' ? window.__inkletSynthesizeSpeech(args) : call('synthesizeSpeech', args),
+  highlightBlock: pos => richEditor.setSpeakingPosition(pos),
+  scrollIntoView: element => {
+    const pane = richEditor.container;
+    const bounds = element.getBoundingClientRect();
+    const view = pane.getBoundingClientRect();
+    if (bounds.top < view.top + 28 || bounds.bottom > view.bottom - 28) {
+      pane.scrollTop += bounds.top - view.top - pane.clientHeight * 0.25;
+    }
+  },
+  onEmpty: () => toast('当前文档暂无可朗读的正文内容。', true),
+  onChapterStop: () => toast('本章已朗读完毕'),
+  onTimerStop: minutes => toast(`已达到 ${minutes} 分钟定时，朗读已停止`),
+  onState: state => {
+    find('#speech-panel').hidden = !state.active;
+    for (const btn of document.querySelectorAll('[data-action="read-aloud"]')) {
+      btn.classList.toggle('active', state.active);
+      btn.setAttribute('aria-pressed', String(state.active));
+    }
+    if (!state.active) return;
+    const stepText = state.total > 0 ? ` ${state.index + 1} / ${state.total}` : '';
+    find('#speech-status').textContent = state.loading
+      ? `正在合成${stepText}...`
+      : state.paused
+        ? `已暂停${stepText}`
+        : `${state.usingFallback ? '系统朗读' : '书籍朗读'}${stepText}`;
+    find('#speech-preview').textContent = state.segment?.preview || '';
+    const toggleBtn = find('#speech-toggle-button');
+    if (toggleBtn) {
+      const label = state.paused ? '继续朗读' : '暂停朗读';
+      toggleBtn.title = label;
+      toggleBtn.setAttribute('aria-label', label);
+      toggleBtn.innerHTML = icon(state.paused ? 'play' : 'pause');
+      createIcons({ icons: iconSet, attrs: { 'stroke-width': 1.7 } });
+    }
+    find('[data-action="speech-prev"]').disabled = state.index <= 0;
+    find('[data-action="speech-next"]').disabled = state.index >= state.total - 1;
+  },
+});
+
+function toggleReadAloud() {
+  if (speechController.active) {
+    speechController.stop();
+    return;
+  }
+  richEditor.flush();
+  if (hasSelectedText() && selection.to > selection.from) {
+    const selectedText = documentSession.source.slice(selection.from, selection.to);
+    const range = richEditor.parsed?.ranges?.find(r => selection.from >= r.from && selection.from <= r.to);
+    find('#selection-tools').hidden = true;
+    speechController.speakSelection(selectedText, range ? range.position : null);
+    return;
+  }
+  const startOffset = selection.from > 0 ? selection.from : 0;
+  speechController.start(richEditor.parsed, startOffset);
+}
+
+function speakSelectedRange() {
+  if (!hasSelectedText() || selection.to <= selection.from) {
+    toggleReadAloud();
+    return;
+  }
+  richEditor.flush();
+  const selectedText = documentSession.source.slice(selection.from, selection.to);
+  const range = richEditor.parsed?.ranges?.find(r => selection.from >= r.from && selection.from <= r.to);
+  find('#selection-tools').hidden = true;
+  speechController.speakSelection(selectedText, range ? range.position : null);
+}
+
 function createRecoveryWriter() { return new RecoveryWriter({
   snapshot: () => !incomingTransfer && (!detaching || detaching.preparing) && dirty() ? { documentId: recoveryDocumentId, revision: documentSession.revision, text: documentSession.source, name: documentInfo.name, path: documentInfo.path, hash: documentInfo.hash, annotations: annotationPayload() } : null,
   write: call,
@@ -407,6 +526,7 @@ async function switchDocument(id, internal = false) {
   find('#workspace').inert = true;
   find('#workspace').setAttribute('aria-busy', 'true');
   try {
+    speechController.stop();
     richEditor.flush();
     await readingTracker.flush().catch(() => {});
     captureDocumentState();
@@ -427,7 +547,7 @@ async function switchDocument(id, internal = false) {
     find('#external-change').hidden = true;
     find('#image-access').hidden = true;
     richEditor.pending = undefined;
-    results = []; totalResults = 0; selectedResult = -1; resultsRevision = -1; searchId++; searchGroups = [];
+    results = []; paintedResults = []; totalResults = 0; selectedResult = -1; resultsRevision = -1; searchId++; searchGroups = [];
     sourceEditor.setText(documentSession.source);
     richEditor.load(documentSession.source, entry.rendered);
     for (const candidate of workspace.entries.values()) if (!candidate.state || candidate.id === id) candidate.rendered = null;
@@ -592,6 +712,7 @@ async function closeDocuments(ids, exit = false) {
     return false;
   }
   richEditor.flush(); captureDocumentState();
+  if (ids.includes(recoveryDocumentId) || exit) speechController.stop();
   closingWorkspace = true; find('#workspace').inert = true; document.activeElement?.blur();
   try {
     await readingTracker.flush().catch(() => {});
@@ -694,13 +815,19 @@ function history(action) {
   changed();
   return true;
 }
+function hasSelectedText() {
+  if (selection.from >= selection.to) return false;
+  if (!documentSession.source.slice(selection.from, selection.to).trim()) return false;
+  return activePane === 'source' ? sourceEditor.hasTextSelection : richEditor.hasTextSelection;
+}
 function setSelection(from, to) {
   selection = { from: Math.max(0, Math.min(from, to)), to: Math.min(documentSession.source.length, Math.max(from, to)) };
   updateStatus();
   clearTimeout(window.selectionTimer);
+  if (!hasSelectedText()) find('#selection-tools').hidden = true;
   window.selectionTimer = setTimeout(() => {
     const toolbar = find('#selection-tools');
-    if (selection.from >= selection.to || find('dialog[open]') || document.activeElement?.closest('.search-panel')) { toolbar.hidden = true; return; }
+    if (!hasSelectedText() || find('dialog[open]') || document.activeElement?.closest('.search-panel, .search-results-panel')) { toolbar.hidden = true; return; }
     try {
       const anchor = activePane === 'source' ? sourceEditor.anchor : richEditor.anchor;
       toolbar.hidden = false;
@@ -965,6 +1092,33 @@ function applySettings(persist = true) {
   find('#detach-file-button').hidden = !multipleWindows;
   find('#compress-input').checked = settings.compress;
   find('#embed-images-input').checked = settings.embedImages === true;
+  settings.speechVoice = normalizeSpeechVoice(settings.speechVoice);
+  settings.speechRate = normalizeSpeechRate(settings.speechRate);
+  settings.speechPitch = normalizeSpeechPitch(settings.speechPitch);
+  settings.speechStopMode = speechStopModes.some(([id]) => id === settings.speechStopMode) ? settings.speechStopMode : 'continuous';
+  settings.speechSkipCode = settings.speechSkipCode !== false;
+  settings.speechProvider = settings.speechProvider === 'openai' ? 'openai' : 'edge';
+  find('#speech-provider-input').value = settings.speechProvider;
+  find('#speech-custom-fields').hidden = settings.speechProvider !== 'openai';
+  find('#speech-endpoint-input').value = settings.speechEndpoint || '';
+  find('#speech-model-input').value = settings.speechModel || 'tts-1';
+  find('#speech-custom-voice-input').value = settings.speechCustomVoice || 'alloy';
+  find('#speech-api-key-input').value = settings.speechApiKey || '';
+  find('#speech-voice-input').value = settings.speechVoice;
+  find('#speech-bar-voice').value = settings.speechVoice;
+  find('#speech-pitch-input').value = settings.speechPitch;
+  find('#speech-bar-pitch').value = settings.speechPitch;
+  find('#speech-stop-mode-input').value = settings.speechStopMode;
+  find('#speech-bar-stop-mode').value = settings.speechStopMode;
+  find('#speech-skip-code-input').checked = settings.speechSkipCode;
+  find('#speech-rate-input').value = settings.speechRate;
+  find('#speech-rate-output').textContent = Number(settings.speechRate).toFixed(2) + ' 倍';
+  const rateSelect = find('#speech-bar-rate');
+  const rateString = String(settings.speechRate);
+  if (![...rateSelect.options].some(opt => opt.value === rateString)) {
+    rateSelect.add(new Option(Number(settings.speechRate).toFixed(2).replace(/\.?0+$/, '') + 'x', rateString));
+  }
+  rateSelect.value = rateString;
   const palette = codePalette(codeColorScope, settings.codeColors || {});
   for (const input of document.querySelectorAll('[data-code-color]')) input.value = palette[input.dataset.codeColor];
   sourceEditor.refresh(); richEditor.refresh();
@@ -990,6 +1144,7 @@ async function confirmDiscard() {
   });
 }
 async function loadDocument(data, restored = false) {
+  speechController.stop();
   await readingTracker?.flush().catch(() => {});
   find('#image-access').hidden = true;
   externalSnapshot = null;
@@ -1009,7 +1164,7 @@ async function loadDocument(data, restored = false) {
   selection = { from: 0, to: 0 };
   sourceEditor.setText(documentSession.source);
   richEditor.load(documentSession.source);
-  results = []; totalResults = 0; resultsRevision = -1; selectedResult = -1; searchId++;
+  results = []; paintedResults = []; totalResults = 0; resultsRevision = -1; selectedResult = -1; searchId++;
   searchWorker.postMessage({ type: 'document', source: documentSession.source, revision: documentSession.revision });
   find('#selection-tools').hidden = true;
   sourceEditor.view.scrollDOM.scrollTop = 0;
@@ -1088,7 +1243,7 @@ async function save(saveAs = false) {
       selection = { from: mapPosition(originalSelection.from), to: mapPosition(originalSelection.to) };
       sourceEditor.view.dispatch({ selection: { anchor: selection.from, head: selection.to } });
       richEditor.reveal(selection.from, selection.to, true, false);
-      searchId++; results = []; totalResults = 0; resultsRevision = -1;
+      searchId++; results = []; paintedResults = []; totalResults = 0; resultsRevision = -1;
       searchWorker.postMessage({ type: 'document', source: documentSession.source, revision: documentSession.revision });
       updateNavigation();
       if (!find('#search-panel').hidden) scheduleSearch();
@@ -1400,8 +1555,20 @@ function dropFiles(event) {
 }
 function toggleSearch(show = find('#search-panel').hidden) {
   find('#search-panel').hidden = !show;
-  if (show) { find('#selection-tools').hidden = true; find('#search-input').focus(); find('#search-input').select(); scheduleSearch(); }
-  else { clearTimeout(searchTimer); searchId++; searching = false; invalidateSearch(); reportSearchState(); }
+  if (show) {
+    find('#selection-tools').hidden = true;
+    find('#search-input').focus({ preventScroll: true });
+    find('#search-input').select();
+    if (find('#search-input').value || results.length || paintedResults.length) scheduleSearch();
+    else reportSearchState();
+  } else {
+    clearTimeout(searchTimer); searchId++; searching = false;
+    if (searchPaintFrame !== null) { cancelAnimationFrame(searchPaintFrame); searchPaintFrame = null; }
+    invalidateSearch(true);
+    sourceEditor.refreshSearch();
+    richEditor.refreshSearch();
+    reportSearchState();
+  }
 }
 
 function renderSearchResults() {
@@ -1454,8 +1621,9 @@ function refreshSearchPresentation() {
     richEditor.refreshSearch();
   });
 }
-function invalidateSearch() {
-  const painted = results.length > 0;
+function invalidateSearch(clearPainted = true) {
+  const painted = clearPainted && paintedResults.length > 0;
+  if (clearPainted) paintedResults = [];
   results = []; totalResults = 0; selectedResult = -1; resultsRevision = -1;
   find('#search-count').textContent = '0 处';
   find('#search-time').textContent = '';
@@ -1466,8 +1634,8 @@ function invalidateSearch() {
 function scheduleSearch() {
   clearTimeout(searchTimer); searchId++;
   searching = !find('#search-panel').hidden && !!find('#search-input').value;
-  invalidateSearch();
-  if (find('#search-panel').hidden || !find('#search-input').value) { reportSearchState(); return; }
+  invalidateSearch(!searching);
+  if (!searching) { reportSearchState(); return; }
   find('#search-count').textContent = '查找中...';
   searchTimer = setTimeout(() => {
     reportSearchState();
@@ -1485,6 +1653,7 @@ function scheduleSearch() {
 function receiveSearchResults(event) {
   if (find('#search-panel').hidden || event.data.id !== searchId || event.data.revision !== documentSession.revision) return;
   results = event.data.matches.slice(0, 5000).filter(match => Number.isInteger(match.from) && Number.isInteger(match.to) && match.from >= 0 && match.to > match.from && match.to <= documentSession.source.length);
+  paintedResults = results;
   totalResults = event.data.count; selectedResult = -1; resultsRevision = documentSession.revision; searching = false;
   find('#search-count').textContent = totalResults.toLocaleString() + ' 处' + (totalResults > results.length ? ' · 前 ' + results.length : '');
   find('#search-time').textContent = Math.round(event.data.duration) + ' ms';
@@ -1514,7 +1683,9 @@ function nextMatch(direction) {
 }
 function selectMatch(index) {
   if (!results[index] || resultsRevision !== documentSession.revision) return;
+  const previousSelected = selectedResult;
   selectedResult = index;
+  if (index >= 250 || previousSelected >= 250) refreshSearchPresentation();
   const match = results[selectedResult];
   reveal(match.from, match.to);
   find('#search-count').textContent = (selectedResult + 1) + ' / ' + totalResults.toLocaleString();
@@ -1525,7 +1696,7 @@ function replaceCurrent() {
   if (selectedResult < 0) nextMatch(1);
   const match = results[selectedResult];
   changeDocument({ ...match, insert: find('#replace-input').value }, 'command');
-  results = []; selectedResult = -1; scheduleSearch();
+  results = []; paintedResults = []; selectedResult = -1; scheduleSearch();
 }
 async function replaceAll() {
   if (!results.length || resultsRevision !== documentSession.revision) return;
@@ -1539,7 +1710,7 @@ async function replaceAll() {
     searchWorker.postMessage({ type: 'document', source: documentSession.source, revision: documentSession.revision });
     changed();
   }
-  results = []; scheduleSearch(); toast('已替换 ' + count + ' 处，可撤销。');
+  results = []; paintedResults = []; scheduleSearch(); toast('已替换 ' + count + ' 处，可撤销。');
 }
 function tableDialog() {
   find('#edit-title').textContent = '插入表格';
@@ -1616,6 +1787,13 @@ async function action(name) {
   if (name === 'default-app') { await call('registerDefault'); toast('已打开 Windows 默认应用设置'); return; }
   if (name === 'unify-theme') { settings.leftTheme = settings.rightTheme; applySettings(); return; }
   if (name === 'zoom-in' || name === 'zoom-out') { settings.fontSize = Math.max(14, Math.min(24, settings.fontSize + (name === 'zoom-in' ? 1 : -1))); applySettings(); return; }
+  if (name === 'read-aloud') { toggleReadAloud(); return; }
+  if (name === 'speak-selection') { speakSelectedRange(); return; }
+  if (name === 'speech-preview') { speechController.previewVoice(); return; }
+  if (name === 'speech-toggle') { speechController.toggle(); return; }
+  if (name === 'speech-prev') { speechController.step(-1, true); return; }
+  if (name === 'speech-next') { speechController.step(1, true); return; }
+  if (name === 'speech-stop') { speechController.stop(); return; }
   if (name === 'search') return toggleSearch(true);
   if (name === 'search-close') return toggleSearch(false);
   if (name === 'next' || name === 'previous') return nextMatch(name === 'next' ? 1 : -1);
@@ -1658,7 +1836,7 @@ document.addEventListener('pointerdown', event => {
   const file = event.target.closest('[data-document-open]');
   if (multipleWindows && file && event.button === 0 && !incomingTransfer && !detaching) dragCandidate = { id: file.dataset.documentOpen, x: event.clientX, y: event.clientY };
   if (event.target.closest('.toolbar,.selection-tools,.table-tools')) event.preventDefault();
-  if (!event.target.closest('.selection-tools,.editor-pane')) find('#selection-tools').hidden = true;
+  if (!event.target.closest('.selection-tools')) find('#selection-tools').hidden = true;
 });
 document.addEventListener('pointermove', event => {
   if (!dragCandidate || !(event.buttons & 1) || draggingFile || Math.hypot(event.clientX - dragCandidate.x, event.clientY - dragCandidate.y) < 8) return;
@@ -1821,6 +1999,66 @@ for (const input of document.querySelectorAll('[data-code-color]')) input.addEve
   settings.codeColors = { ...settings.codeColors, [codeColorScope]: { ...settings.codeColors?.[codeColorScope], [input.dataset.codeColor]: event.target.value } };
   applySettings();
 });
+find('#speech-voice-input').addEventListener('change', event => {
+  settings.speechVoice = normalizeSpeechVoice(event.target.value);
+  applySettings();
+  speechController.updateVoiceOrRate(true);
+});
+find('#speech-bar-voice').addEventListener('change', event => {
+  settings.speechVoice = normalizeSpeechVoice(event.target.value);
+  applySettings();
+  speechController.updateVoiceOrRate(true);
+});
+find('#speech-pitch-input').addEventListener('change', event => {
+  settings.speechPitch = normalizeSpeechPitch(event.target.value);
+  applySettings();
+  speechController.updateVoiceOrRate(true);
+});
+find('#speech-bar-pitch').addEventListener('change', event => {
+  settings.speechPitch = normalizeSpeechPitch(event.target.value);
+  applySettings();
+  speechController.updateVoiceOrRate(true);
+});
+find('#speech-stop-mode-input').addEventListener('change', event => {
+  settings.speechStopMode = event.target.value;
+  applySettings();
+  if (speechController.active) speechController.configureStopTimer();
+});
+find('#speech-bar-stop-mode').addEventListener('change', event => {
+  settings.speechStopMode = event.target.value;
+  applySettings();
+  if (speechController.active) speechController.configureStopTimer();
+});
+find('#speech-skip-code-input').addEventListener('change', event => {
+  settings.speechSkipCode = event.target.checked;
+  applySettings();
+});
+find('#speech-provider-input').addEventListener('change', event => {
+  settings.speechProvider = event.target.value === 'openai' ? 'openai' : 'edge';
+  applySettings();
+  speechController.updateVoiceOrRate(true);
+});
+for (const [selector, key] of [
+  ['#speech-endpoint-input', 'speechEndpoint'],
+  ['#speech-model-input', 'speechModel'],
+  ['#speech-custom-voice-input', 'speechCustomVoice'],
+  ['#speech-api-key-input', 'speechApiKey'],
+]) {
+  find(selector).addEventListener('change', event => {
+    settings[key] = event.target.value.trim();
+    applySettings();
+  });
+}
+find('#speech-rate-input').addEventListener('input', event => {
+  settings.speechRate = normalizeSpeechRate(event.target.value);
+  applySettings();
+  speechController.updateVoiceOrRate(false);
+});
+find('#speech-bar-rate').addEventListener('change', event => {
+  settings.speechRate = normalizeSpeechRate(event.target.value);
+  applySettings();
+  speechController.updateVoiceOrRate(false);
+});
 find('#search-input').addEventListener('input', scheduleSearch);
 find('#search-input').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); nextMatch(event.shiftKey ? -1 : 1); } if (event.key === 'Escape') toggleSearch(false); });
 find('#case-toggle').addEventListener('click', event => { const target = event.currentTarget; target.setAttribute('aria-pressed', String(target.getAttribute('aria-pressed') !== 'true')); scheduleSearch(); });
@@ -1847,7 +2085,18 @@ function renderShortcuts(overrides) {
   }
 }
 document.addEventListener('keydown', event => {
-  if (event.target.closest('.hotkey-input') || event.isComposing || event.keyCode === 229 || event.target.closest('dialog')) return;
+  if (event.target.closest('.hotkey-input') || event.isComposing || event.keyCode === 229) return;
+  if (event.key === 'Escape') {
+    const openDialog = document.querySelector('dialog[open]:not(#workspace-close-dialog)');
+    if (openDialog) {
+      event.preventDefault();
+      if (openDialog.id === 'export-dialog') exportController?.abort();
+      openDialog.close('cancel');
+      return;
+    }
+    if (!find('#selection-tools').hidden) find('#selection-tools').hidden = true;
+  }
+  if (event.target.closest('dialog')) return;
   if (workspaceEnabled && (event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'w') {
     event.preventDefault();
     closeDocuments(event.shiftKey ? workspaceEntries().map(entry => entry.id) : [recoveryDocumentId]).catch(showError);
@@ -1995,5 +2244,5 @@ if (import.meta.env.DEV) window.inkletTest = {
   get sourceEditor() { return sourceEditor; },
   get richEditor() { return richEditor; },
   get revision() { return documentSession.revision; },
-  select: (from, to, pane = 'source') => { activePane = pane; setSelection(from, to); if (pane === 'source') { sourceEditor.reveal(from, to); sourceEditor.focus(); } else { richEditor.reveal(from, to); richEditor.focus(); } },
+  select: (from, to, pane = 'source') => { activePane = pane; if (pane === 'source') { sourceEditor.reveal(from, to); sourceEditor.focus(); } else { richEditor.reveal(from, to); richEditor.focus(); } setSelection(from, to); },
 };

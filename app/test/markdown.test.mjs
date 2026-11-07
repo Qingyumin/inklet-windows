@@ -1,5 +1,6 @@
 import { embedDocumentImages } from '../src/embedded-images.js';
 import { isImagePlaceholder } from '../src/image-references.js';
+import { extractSpeechSegments, splitSpeechSentences, cleanSpeechText, speechVoices, normalizeSpeechVoice, normalizeSpeechRate, normalizeSpeechPitch } from '../src/speech-reader.js';
 
 test('explicit image placeholders are preserved without reading files', async () => {
   const reference = '\u5360\u4f4d\uff1aMD\u8f6cWord\u65f6\u63d2\u5165';
@@ -73,7 +74,7 @@ test('embedded image conversion supports references, Windows paths and HTML tabl
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EditorState } from 'prosemirror-state';
-import { parseDocument, richChange, plainTextChange, schema, serializer, sourcePosition, prosePosition, imageInsertion, wordStatistics, documentHeadings } from '../src/markdown.js';
+import { parseDocument, richChange, plainTextChange, schema, serializer, sourcePosition, prosePosition, imageInsertion, wordStatistics, documentHeadings, outlineOf, fragmentTarget } from '../src/markdown.js';
 import { DocumentSession, replaceText } from '../../core/document.mjs';
 import { quoteFlowchartLabels } from '../src/renderers.js';
 import { tableColumnWidths } from '../src/table-layout.js';
@@ -98,6 +99,94 @@ test('source breaks keep edited lines and leave ordinary numbered lists and code
   assert.equal(parsed.doc.child(1).type.name, 'ordered_list');
   assert.equal(parsed.doc.child(2).type.name, 'code_block');
   assert.equal(parsed.doc.child(2).textContent, 'A. Code\nB. Code');
+});
+
+test('HTML comments keep source metadata but do not become reading text', () => {
+  const source = '<!-- markdownlint-disable MD033 -->\n\n<!-- PRD_METADATA_START\n{"name":"Example"}\nPRD_METADATA_END -->\n\n# Overview\n\nBody <!-- internal --> text.\n';
+  const parsed = parseDocument(source);
+  assert.equal(parsed.doc.child(0).type.name, 'html_comment');
+  assert.equal(parsed.doc.child(1).type.name, 'html_comment');
+  assert.ok(!parsed.doc.textContent.includes('PRD_METADATA'));
+  assert.ok(!parsed.doc.textContent.includes('internal'));
+  assert.ok(serializer.serialize(parsed.doc).includes('<!-- internal -->'));
+  assert.ok(serializer.serialize(parsed.doc).includes('{"name":"Example"}'));
+  const last = parsed.ranges.at(-1);
+  const next = EditorState.create({ doc: parsed.doc }).tr.insertText('Updated ', last.position + 1).doc;
+  assert.equal(replaceText(source, richChange(source, parsed.doc, next, parsed.ranges)), source.replace('Body ', 'Updated Body '));
+  assert.equal(parsed.ranges.find(range => range.node.type.name === 'heading').from, source.indexOf('# Overview'));
+});
+
+test('HTML comment recognition preserves code examples, incomplete comments and pagebreaks', () => {
+  assert.equal(parseDocument('```html\n<!-- Example -->\n```').doc.firstChild.textContent, '<!-- Example -->');
+  assert.equal(parseDocument('Inline `<!-- Example -->` text.').doc.firstChild.textContent, 'Inline <!-- Example --> text.');
+  assert.equal(parseDocument('<!-- unfinished\n\n# Still visible').doc.lastChild.type.name, 'heading');
+  assert.equal(parseDocument('<!-- pagebreak -->').doc.firstChild.type.name, 'page_break');
+});
+
+test('HTML cover renders controlled titles and tables and leaves later source unchanged', () => {
+  const cover = '<section id="cover" style="min-height:240mm;display:flex;page-break-after:always">\n<table><tr><th>Product</th><th>Level</th></tr><tr><td>FCore</td><td>Internal</td></tr></table>\n<a id="cover-title"></a>\n<h1 style="text-align:center">Goods movement</h1>\n<footer style="text-align:center"><p>Signature</p><strong>Company</strong><br>Footer</footer>\n</section>';
+  const source = '<!-- metadata\n{"version":"V0.9"}\n-->\n\n' + cover + '\n\n<a id="1-overview"></a>\n\n# 1 Overview\n\nOriginal body.\n';
+  const parsed = parseDocument(source);
+  const node = parsed.doc.child(1);
+  assert.equal(node.type.name, 'html_block');
+  const nodes = []; node.descendants(child => { nodes.push(child); });
+  assert.equal(nodes.filter(child => child.type.name === 'table').length, 1);
+  assert.equal(nodes.find(child => child.type.name === 'heading').attrs.textAlign, 'center');
+  assert.ok(nodes.some(child => child.attrs.pageBreakAfter));
+  assert.ok(!node.textContent.includes('<section'));
+  assert.ok(serializer.serialize(parsed.doc).includes(cover));
+  assert.equal(parsed.doc.child(2).type.name, 'html_anchor');
+  const paragraph = parsed.ranges.at(-1);
+  const next = EditorState.create({ doc: parsed.doc }).tr.insertText('Changed', paragraph.position + 1, paragraph.position + 9).doc;
+  assert.equal(replaceText(source, richChange(source, parsed.doc, next, parsed.ranges)), source.replace('Original body.', 'Changed body.'));
+  assert.equal(parsed.ranges.find(range => range.node.type.name === 'heading').from, source.indexOf('# 1 Overview'));
+});
+
+test('safe HTML blocks omit active content and unsafe layout but retain semantic formatting', () => {
+  const parsed = parseDocument('<div onclick="alert(1)" style="position:fixed;inset:0;background:url(https://example.invalid/a)"><script>window.attack=1</script><iframe src="https://example.invalid"></iframe><h2 align="center">Title</h2><p><strong>Bold</strong><br><a href="javascript:alert(1)">No action</a></p></div>');
+  const content = []; parsed.doc.descendants(node => { if (node.type.name === 'heading' || node.type.name === 'paragraph') content.push(node); });
+  assert.equal(parsed.doc.firstChild.type.name, 'html_block');
+  assert.ok(!parsed.doc.textContent.includes('attack'));
+  assert.equal(content[0].attrs.textAlign, 'center');
+  assert.equal(content[1].firstChild.marks[0].type.name, 'strong');
+  assert.equal(content[1].child(1).type.name, 'hard_break');
+  assert.equal(content[1].lastChild.marks.length, 0);
+  const dom = schema.nodes.html_block.spec.toDOM(parsed.doc.firstChild);
+  assert.equal(dom[1].onclick, undefined);
+  assert.equal(dom[1].style, undefined);
+});
+
+test('HTML headings and explicit fragment anchors navigate to their visible content', () => {
+  const source = '<section><a id="cover"></a><h1 align="center">Cover</h1></section>\n\n<a id="chapter-1"></a>\n\n# Chapter one\n\nBody';
+  const parsed = parseDocument(source);
+  assert.deepEqual(documentHeadings(parsed.doc).map(item => item.text), ['Cover', 'Chapter one']);
+  assert.deepEqual(outlineOf(parsed).map(item => item.from), [source.indexOf('Cover'), source.indexOf('# Chapter')]);
+  assert.equal(sourcePosition(parsed, fragmentTarget(parsed.doc, '#cover')), source.indexOf('Cover'));
+  assert.equal(sourcePosition(parsed, fragmentTarget(parsed.doc, '#chapter-1')), source.indexOf('Chapter one'));
+  assert.equal(fragmentTarget(parsed.doc, '#unknown'), null);
+  assert.equal(fragmentTarget(parseDocument('<a id="same"></a>\n\n<a id="same"></a>\n\n# Ambiguous').doc, '#same'), null);
+});
+
+test('HTML edits stay HTML while incomplete blocks, code and empty anchors retain their meaning', () => {
+  const source = '<section><h1 align="center">Title</h1><p>Body</p><!-- retained --></section>\n\n# Following\n';
+  const parsed = parseDocument(source);
+  let position;
+  parsed.doc.descendants((node, offset) => { if (node.isText && node.text === 'Title') position = offset; });
+  const transaction = EditorState.create({ doc: parsed.doc }).tr.insertText('Updated', position, position + 5);
+  assert.equal(plainTextChange(parsed, transaction), null);
+  const updated = replaceText(source, richChange(source, parsed.doc, transaction.doc, parsed.ranges));
+  assert.ok(updated.includes('<h1 style="text-align:center">Updated</h1>'));
+  assert.ok(updated.includes('<!-- retained -->'));
+  assert.equal(parseDocument(updated).doc.lastChild.textContent, 'Following');
+  assert.equal(parseDocument('<section>\nUnclosed\n\n# Following').doc.lastChild.type.name, 'heading');
+  assert.equal(parseDocument('```html\n<section>Example</section>\n```').doc.firstChild.type.name, 'code_block');
+  assert.equal(parseDocument('First<br>Second').doc.firstChild.child(1).type.name, 'hard_break');
+  const anchors = parseDocument('<a id="one"></a>\n\nBody <a name="two"></a>text.');
+  assert.equal(anchors.doc.firstChild.type.name, 'html_anchor');
+  assert.equal(anchors.doc.firstChild.attrs.id, 'one');
+  assert.equal(anchors.doc.lastChild.child(1).type.name, 'html_anchor_inline');
+  assert.equal(anchors.doc.textContent, 'Body text.');
+  assert.ok(serializer.serialize(anchors.doc).includes('<a name="two"></a>'));
 });
 
 test('valid leading YAML front matter becomes one property-table node', () => {
@@ -387,4 +476,47 @@ test('inserting an image before a formula keeps the following block separate', (
   const result = imageInsertion(source, offset, offset, { src: 'image.png' });
   const parsed = parseDocument(replaceText(source, result.change));
   assert.deepEqual(parsed.ranges.map(range => range.node.type.name), ['paragraph', 'paragraph', 'math_block']);
+});
+
+test('speech segment extraction skips comments, front matter and Mermaid while splitting long paragraphs', () => {
+  const longSentence = '这是一段用于书籍朗读测试的长句内容，验证分段器会在自然标点处切分。'.repeat(10);
+  const source = '---\nname: demo\n---\n\n<!-- hidden comment -->\n\n# 第一章 导读\n\n' + longSentence + '\n\n```mermaid\nflowchart LR\n A-->B\n```\n\n| 字段 | 含义 |\n| --- | --- |\n| WERKS | 工厂 |\n';
+  const parsed = parseDocument(source);
+  const segments = extractSpeechSegments(parsed);
+  assert.ok(segments.length >= 4);
+  assert.equal(segments[0].text, '第一章 导读');
+  assert.ok(segments.every(item => item.text.length <= 220 && !item.text.includes('flowchart') && !item.text.includes('hidden comment')));
+  assert.ok(segments.some(item => item.text.includes('WERKS，工厂')));
+  assert.equal(normalizeSpeechVoice('zh-CN-YunyangNeural'), 'zh-CN-YunyangNeural');
+  assert.equal(normalizeSpeechVoice('en-US-AvaMultilingualNeural'), 'en-US-AvaMultilingualNeural');
+  assert.equal(normalizeSpeechVoice('zh-TW-HsiaoChenNeural'), 'zh-TW-HsiaoChenNeural');
+  assert.equal(normalizeSpeechVoice('unknown-voice'), 'zh-CN-YunxiNeural');
+  assert.equal(speechVoices.length, 16);
+  assert.equal(normalizeSpeechRate(1.25), 1.25);
+  assert.equal(normalizeSpeechRate(9), 2);
+  assert.equal(normalizeSpeechRate(0.1), 0.75);
+  assert.equal(normalizeSpeechPitch('-6Hz'), '-6Hz');
+  assert.equal(normalizeSpeechPitch('invalid'), '+0Hz');
+  assert.ok(splitSpeechSentences(longSentence, 120).every(chunk => chunk.length <= 120));
+});
+
+test('speech prosody preprocessor prevents word splitting on inline pinyin, emphasis quotes, chapter numbers and technical symbols', () => {
+  assert.equal(
+    cleanSpeechText('# 第01卷·第01编·第04章 神农朝堂的惊天火并'),
+    '第1卷，第1编，第4章 神农朝堂的惊天火并'
+  );
+  assert.equal(
+    cleanSpeechText('神农氏的第八代天下共主——**炎帝榆罔（yú wǎng）**，坐上了宝座。'),
+    '神农氏的第八代天下共主，炎帝榆罔，坐上了宝座。'
+  );
+  assert.equal(
+    cleanSpeechText('跟在后面的“罴（pí，棕熊）族”壮汉们与“虎族”猎手把“垢（尘垢）”字左边的“土”吹走了，剩下一个“后”字。'),
+    '跟在后面的罴族壮汉们与虎族猎手把垢字左边的土吹走了，剩下一个后字。'
+  );
+  assert.equal(
+    cleanSpeechText('三、「不再设计、直接初始化」字段：把最早/最迟开始时间改为开始类日期+时间，详见 §5.2.17.4。'),
+    '三、不再设计、直接初始化字段：把最早或最迟开始时间改为开始类日期加时间，详见第 5.2.17.4 节。'
+  );
+  const decimalSentence = '3.1 存在冲突或隐患、建议调整的初始化字段（7 项）。';
+  assert.deepEqual(splitSpeechSentences(decimalSentence, 220), ['3.1 存在冲突或隐患、建议调整的初始化字段，7 项。']);
 });

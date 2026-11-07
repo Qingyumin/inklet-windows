@@ -1,7 +1,7 @@
 import { DOMSerializer } from 'prosemirror-model';
 import { TableMap } from 'prosemirror-tables';
 import DOMPurify from 'dompurify';
-import { parseDocument, schema, documentHeadings } from './markdown.js';
+import { parseDocument, schema, documentHeadings, documentAnchors } from './markdown.js';
 import { textAlignment } from './html-tables.js';
 import { renderTableOfContents } from './document-toc.js';
 import { tableColumnWidths } from './table-layout.js';
@@ -139,7 +139,22 @@ export async function prepareExport(source, { title = '文档', colors = {}, typ
   }
   const headings = documentHeadings(parsed.doc);
   let headingIndex = 0;
-  for (const element of body.children) if (/^H[1-6]$/.test(element.tagName)) element.id = headings[headingIndex++].id;
+  const labelHeadings = parent => {
+    for (const element of parent.children) {
+      if (/^H[1-6]$/.test(element.tagName)) element.id = headings[headingIndex++].id;
+      else if (element.hasAttribute('data-html-block')) labelHeadings(element);
+    }
+  };
+  labelHeadings(body);
+  const htmlAnchors = new Map();
+  for (const element of body.querySelectorAll('[data-html-anchor]')) htmlAnchors.set(element.dataset.htmlAnchor, element.id);
+  for (const element of body.querySelectorAll('[data-html-comment]')) element.remove();
+  for (const element of body.querySelectorAll('[data-html-anchor]')) element.style.cssText = 'display:block;height:0;margin:0;padding:0;overflow:hidden';
+  for (const element of body.querySelectorAll('[data-html-break-before]')) element.style.breakBefore = 'page';
+  for (const element of body.querySelectorAll('[data-html-break-after]')) element.style.breakAfter = 'page';
+  for (const link of body.querySelectorAll('a[href^="#"]')) {
+    try { const id = htmlAnchors.get(decodeURIComponent(link.getAttribute('href').slice(1))); if (id) link.setAttribute('href', '#' + id); } catch {}
+  }
   for (const element of body.querySelectorAll('nav[data-toc]')) renderTableOfContents(element, headings);
   const images = new Map();
   const missingImages = new Map();
@@ -244,6 +259,7 @@ export async function createWord(snapshot) {
   ];
   const headings = documentHeadings(snapshot.doc);
   const headingIds = new Map(headings.map(heading => [snapshot.doc.nodeAt(heading.position), heading.id]));
+  const anchorIds = new Map(documentAnchors(snapshot.doc).map((anchor, index) => [anchor.id, 'inklet_anchor_' + (index + 1)]));
   let hasCode = false;
   snapshot.doc.descendants(node => { if (node.type.name === 'code_block') hasCode = true; });
   if (hasCode) await prepareCodeHighlighting();
@@ -269,8 +285,11 @@ export async function createWord(snapshot) {
         }
         const run = new TextRun(options);
         const link = child.marks.find(mark => mark.type.name === 'link');
-        runs.push(link ? new ExternalHyperlink({ link: link.attrs.href, children: [run] }) : run);
+        let anchor;
+        if (link?.attrs.href.startsWith('#')) { try { anchor = anchorIds.get(decodeURIComponent(link.attrs.href.slice(1))); } catch {} }
+        runs.push(anchor ? new InternalHyperlink({ anchor, children: [run] }) : link ? new ExternalHyperlink({ link: link.attrs.href, children: [run] }) : run);
       } else if (child.type.name === 'hard_break') runs.push(new TextRun({ break: 1 }));
+      else if (child.type.name === 'html_anchor_inline') runs.push(new Bookmark({ id: anchorIds.get(child.attrs.id), children: [] }));
       else if (child.type.name === 'image') {
         const issue = snapshot.missingImages?.get(child.attrs.src);
         runs.push(isImagePlaceholder(child.attrs.src) ? new TextRun({ text: missingImageText(child.attrs.src, child.attrs.alt), italics: true }) : issue ? new TextRun({ text: missingImageText(issue.displayPath, child.attrs.alt), italics: true }) : imageRun(snapshot.images.get(child.attrs.src), maxWidth));
@@ -285,7 +304,14 @@ export async function createWord(snapshot) {
     const output = [];
     container.forEach(node => {
       const kind = node.type.name;
-      if (kind === 'paragraph' || kind === 'heading') {
+      if (kind === 'html_comment') return;
+      if (kind === 'html_block') {
+        if (node.attrs.pageBreakBefore && output.length) output.push(new Paragraph({ children: [new PageBreak()] }));
+        output.push(...blocks(node, { ...context, textAlign: node.attrs.textAlign || context.textAlign }));
+        if (node.attrs.pageBreakAfter) output.push(new Paragraph({ children: [new PageBreak()], spacing: { before: 0, after: 0 } }));
+      } else if (kind === 'html_anchor') {
+        output.push(new Paragraph({ children: [new Bookmark({ id: anchorIds.get(node.attrs.id), children: [] })], spacing: { before: 0, after: 0, line: 1 } }));
+      } else if (kind === 'paragraph' || kind === 'heading') {
         const maxWidth = Math.max(1, (context.width || 9866 / 15) - (context.indent || 0) / 15 - (context.list ? 32 * ((context.depth || 0) + 1) : 0));
         const options = { children: inline(node, maxWidth) };
         if (context.cell) options.style = context.header ? 'InkletTableHeader' : 'InkletTable';

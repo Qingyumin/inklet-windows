@@ -126,6 +126,21 @@ test('Word image dimensions fit the page and merged table cells without stretchi
   assert.ok(sizes[2].width > sizes[3].width);
 });
 
+test('Word export renders HTML covers and anchor links but excludes private comments', async () => {
+  const source = '<!-- internal metadata -->\n\n<section style="page-break-after:always"><a id="cover"></a><h1 align="center">Cover title</h1><table><tr><th>Product</th></tr><tr><td>FCore</td></tr></table></section>\n\n[Go to cover](#cover)\n\n# Body';
+  const encoded = await createWord({ title: 'Cover', doc: parseDocument(source).doc, images: new Map(), graphics: new Map(), colors: {} });
+  const archive = await JSZip.loadAsync(Buffer.from(encoded, 'base64'));
+  const content = xml.xml2js(await archive.file('word/document.xml').async('string'));
+  const text = elements(content, 'w:t').flatMap(node => node.elements || []).map(node => node.text).join('');
+  assert.ok(text.includes('Cover title') && text.includes('FCore') && text.includes('Body'));
+  assert.ok(!text.includes('internal metadata') && !text.includes('<section'));
+  assert.equal(elements(content, 'w:tbl').length, 1);
+  assert.ok(elements(content, 'w:jc').some(node => node.attributes['w:val'] === 'center'));
+  assert.ok(elements(content, 'w:br').some(node => node.attributes['w:type'] === 'page'));
+  const anchor = elements(content, 'w:hyperlink')[0].attributes['w:anchor'];
+  assert.ok(elements(content, 'w:bookmarkStart').some(node => node.attributes['w:name'] === anchor));
+});
+
 test('Word export renders YAML front matter as an editable property table', async () => {
   const source = '---\nname: sample-skill\ndescription: "A complete skill description"\n---\n\n# Guide\n';
   const encoded = await createWord({ title: 'Skill', doc: parseDocument(source).doc, images: new Map(), graphics: new Map(), colors: {} });

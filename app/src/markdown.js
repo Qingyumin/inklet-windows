@@ -7,6 +7,7 @@ import { tableNodes } from 'prosemirror-tables';
 import { isMap, parseDocument as parseYamlDocument, stringify as stringifyYaml } from 'yaml';
 import { minimalChange, replaceText } from '../../core/document.mjs';
 import { parseHtmlTable, htmlTableSource, textAlignment } from './html-tables.js';
+import { htmlBlockTag, parseHtmlBlock, htmlBlockSource, parseHtmlAnchor } from './html-blocks.js';
 
 function frontMatterValue(value) {
   if (value == null) return '';
@@ -43,9 +44,37 @@ const lineBreak = { ...baseSchema.spec.nodes.get('hard_break'),
   toDOM: node => ['br', node.attrs.soft ? { 'data-source-break': 'soft' } : {}],
   parseDOM: [{ tag: 'br[data-source-break="soft"]', getAttrs: () => ({ soft: true }) }, { tag: 'br' }],
 };
+const heading = { ...baseSchema.spec.nodes.get('heading'),
+  attrs: { level: { default: 1 }, textAlign: { default: null } },
+  toDOM: node => ['h' + node.attrs.level, textAlignment(node.attrs.textAlign) ? { style: 'text-align:' + node.attrs.textAlign } : {}, 0],
+  parseDOM: Array.from({ length: 6 }, (_, index) => ({ tag: 'h' + (index + 1), getAttrs: element => ({ level: index + 1, textAlign: textAlignment(element.style.textAlign || element.getAttribute('align')) }) })),
+};
+const anchorSpec = inline => ({
+  group: inline ? 'inline' : 'block', inline, atom: true, selectable: false,
+  attrs: { raw: { default: '' }, id: { default: '' } },
+  toDOM: node => [inline ? 'span' : 'div', { class: 'html-anchor', 'data-html-anchor': node.attrs.id, id: 'inklet-anchor-' + encodeURIComponent(node.attrs.id), 'aria-hidden': 'true' }],
+});
 
 export const schema = new Schema({
-  nodes: baseSchema.spec.nodes.update('paragraph', paragraph).update('hard_break', lineBreak).append(tables).append({
+  nodes: baseSchema.spec.nodes.update('paragraph', paragraph).update('heading', heading).update('hard_break', lineBreak).append(tables).append({
+    html_block: {
+      group: 'block', content: 'block+', defining: true, isolating: true,
+      attrs: { raw: { default: '' }, original: { default: '' }, tag: { default: 'div' }, textAlign: { default: null }, pageBreakBefore: { default: false }, pageBreakAfter: { default: false } },
+      toDOM: node => ['div', { class: 'html-block', 'data-html-block': '', ...(textAlignment(node.attrs.textAlign) ? { style: 'text-align:' + node.attrs.textAlign } : {}), ...(node.attrs.pageBreakBefore ? { 'data-html-break-before': '' } : {}), ...(node.attrs.pageBreakAfter ? { 'data-html-break-after': '' } : {}) }, 0],
+      parseDOM: [{ tag: 'div[data-html-block]', getAttrs: element => ({ textAlign: textAlignment(element.style.textAlign), pageBreakBefore: element.hasAttribute('data-html-break-before'), pageBreakAfter: element.hasAttribute('data-html-break-after') }) }],
+    },
+    html_anchor: anchorSpec(false),
+    html_anchor_inline: anchorSpec(true),
+    html_comment: {
+      group: 'block', atom: true, selectable: false,
+      attrs: { raw: { default: '' } },
+      toDOM: () => ['div', { hidden: '', 'data-html-comment': '', 'aria-hidden': 'true' }],
+    },
+    html_comment_inline: {
+      group: 'inline', inline: true, atom: true, selectable: false,
+      attrs: { raw: { default: '' } },
+      toDOM: () => ['span', { hidden: '', 'data-html-comment': '', 'aria-hidden': 'true' }],
+    },
     front_matter: {
       group: 'block', atom: true, selectable: true,
       attrs: { raw: { default: '' }, entries: { default: [] } },
@@ -142,6 +171,80 @@ tokenizer.block.ruler.before('paragraph', 'inklet_document_marker', (state, star
 }, { alt: ['paragraph', 'reference', 'blockquote'] });
 const htmlCache = new Map();
 let htmlCacheSize = 0;
+tokenizer.block.ruler.before('html_block', 'inklet_html_comment', (state, start, end, silent) => {
+  if (state.sCount[start] - state.blkIndent >= 4) return false;
+  const begin = state.bMarks[start] + state.tShift[start];
+  if (!state.src.startsWith('<!--', begin)) return false;
+  const closing = state.src.indexOf('-->', begin + 4);
+  if (closing < 0) return false;
+  let last = start;
+  while (last + 1 < end && state.eMarks[last] < closing + 3) last++;
+  if (state.eMarks[last] < closing + 3 || state.src.slice(closing + 3, state.eMarks[last]).trim()) return false;
+  const raw = state.getLines(start, last + 1, state.blkIndent, false);
+  if (/^<!--\s*pagebreak\s*-->$/i.test(raw.trim())) return false;
+  if (silent) return true;
+  const token = state.push('html_comment', '', 0);
+  token.map = [start, last + 1]; token.content = raw;
+  state.line = last + 1;
+  return true;
+}, { alt: ['paragraph', 'reference', 'blockquote'] });
+tokenizer.inline.ruler.before('html_inline', 'inklet_inline_comment', (state, silent) => {
+  if (!state.src.startsWith('<!--', state.pos)) return false;
+  const closing = state.src.indexOf('-->', state.pos + 4);
+  if (closing < 0) return false;
+  if (!silent) {
+    const token = state.push('html_comment_inline', '', 0);
+    token.content = state.src.slice(state.pos, closing + 3);
+  }
+  state.pos = closing + 3;
+  return true;
+});
+tokenizer.block.ruler.before('html_block', 'inklet_html_anchor', (state, start, end, silent) => {
+  if (state.sCount[start] - state.blkIndent >= 4) return false;
+  const line = state.src.slice(state.bMarks[start] + state.tShift[start], state.eMarks[start]);
+  if (!/^<a\b/i.test(line)) return false;
+  const anchor = parseHtmlAnchor(line);
+  if (!anchor) return false;
+  if (silent) return true;
+  const token = state.push('html_anchor', '', 0);
+  token.map = [start, start + 1]; token.meta = anchor; state.line = start + 1;
+  return true;
+}, { alt: ['paragraph', 'reference', 'blockquote'] });
+tokenizer.inline.ruler.before('html_inline', 'inklet_html_break', (state, silent) => {
+  const match = /^<br\s*\/?\s*>/i.exec(state.src.slice(state.pos));
+  if (!match) return false;
+  if (!silent) state.push('hardbreak', 'br', 0);
+  state.pos += match[0].length;
+  return true;
+});
+tokenizer.inline.ruler.before('html_inline', 'inklet_inline_anchor', (state, silent) => {
+  const match = /^<a\b[^<>]*>\s*<\/a\s*>/i.exec(state.src.slice(state.pos));
+  if (!match) return false;
+  const anchor = parseHtmlAnchor(match[0]);
+  if (!anchor) return false;
+  if (!silent) { const token = state.push('html_anchor_inline', '', 0); token.meta = anchor; }
+  state.pos += match[0].length;
+  return true;
+});
+tokenizer.block.ruler.before('html_block', 'inklet_safe_html_block', (state, start, end, silent) => {
+  if (state.sCount[start] - state.blkIndent >= 4) return false;
+  const begin = state.bMarks[start] + state.tShift[start];
+  const tag = htmlBlockTag(state.src.slice(begin, state.eMarks[start]));
+  if (!tag) return false;
+  const closing = new RegExp('</' + tag + '\\s*>', 'i');
+  for (let line = start; line < end; line++) {
+    if (state.eMarks[line] - begin > 1024 * 1024) return false;
+    if (tag !== 'hr' && !closing.test(state.src.slice(state.bMarks[line], state.eMarks[line]))) continue;
+    const content = state.getLines(start, line + 1, state.blkIndent, false);
+    const node = parseHtmlBlock(content, schema);
+    if (!node) continue;
+    if (silent) return true;
+    const token = state.push('safe_html_block', '', 0);
+    token.map = [start, line + 1]; token.meta = node; state.line = line + 1;
+    return true;
+  }
+  return false;
+}, { alt: ['paragraph', 'reference', 'blockquote'] });
 tokenizer.block.ruler.before('html_block', 'inklet_html_table', (state, start, end, silent) => {
   if (state.sCount[start] - state.blkIndent >= 4) return false;
   const begin = state.bMarks[start] + state.tShift[start];
@@ -182,6 +285,10 @@ const tokenRules = {
   th: { block: 'table_header' },
   td: { block: 'table_cell' },
   s: { mark: 'strike' },
+  html_comment: { node: 'html_comment', getAttrs: token => ({ raw: token.content }) },
+  html_comment_inline: { node: 'html_comment_inline', getAttrs: token => ({ raw: token.content }) },
+  html_anchor: { node: 'html_anchor', getAttrs: token => token.meta },
+  html_anchor_inline: { node: 'html_anchor_inline', getAttrs: token => token.meta },
   front_matter: { node: 'front_matter', getAttrs: token => token.meta },
   toc_marker: { node: 'toc', getAttrs: token => ({ marker: token.content }) },
   page_break_marker: { node: 'page_break', getAttrs: token => ({ marker: token.content }) },
@@ -195,6 +302,11 @@ const tokenRules = {
 
 export const serializer = new MarkdownSerializer({
   ...defaultMarkdownSerializer.nodes,
+  html_comment(state, node) { state.write(node.attrs.raw.replace(/\n$/, '')); state.closeBlock(node); },
+  html_comment_inline(state, node) { state.write(node.attrs.raw); },
+  html_anchor(state, node) { state.write(node.attrs.raw); state.closeBlock(node); },
+  html_anchor_inline(state, node) { state.write(node.attrs.raw); },
+  html_block(state, node) { state.write(htmlBlockSource(node).replace(/\n$/, '')); state.closeBlock(node); },
   hard_break(state, node, parent, index) {
     if (node.attrs.soft) state.write('\n');
     else defaultMarkdownSerializer.nodes.hard_break(state, node, parent, index);
@@ -253,6 +365,7 @@ export function parseDocument(source) {
   }
   const parser = new MarkdownParser(schema, { parse: () => tokens }, tokenRules);
   parser.tokenHandlers.html_table = (state, token) => state.addNode(schema.nodes.table, token.meta.attrs, token.meta.content.content);
+  parser.tokenHandlers.safe_html_block = (state, token) => state.addNode(schema.nodes.html_block, token.meta.attrs, token.meta.content.content);
   const doc = parser.parse(source);
   const ranges = [];
   doc.forEach((node, position, index) => {
@@ -298,7 +411,12 @@ export function sourcePosition(parsed, position, association = 1) {
   const run = parsed.runs.find(item => position >= item.position && position <= item.position + item.text.length);
   if (run) return run.from + position - run.position;
   const block = parsed.ranges.find(item => position >= item.position && position <= item.end);
-  return block ? (association > 0 ? block.from : block.to) : parsed.source.length;
+  if (!block) return parsed.source.length;
+  if (association < 0) {
+    const previous = parsed.runs.findLast(item => item.position >= block.position && item.position + item.text.length <= position);
+    if (previous) return previous.to;
+  }
+  return association > 0 ? block.from : block.to;
 }
 
 export function prosePosition(parsed, position) {
@@ -312,7 +430,7 @@ export function prosePosition(parsed, position) {
 export function plainTextChange(parsed, transaction) {
   if (transaction.steps.length !== 1) return null;
   const step = transaction.steps[0];
-  if (parsed.ranges.some(range => range.node.type.name === 'table' && range.node.attrs.format === 'html' && step.from >= range.position && step.to <= range.end)) return null;
+  if (parsed.ranges.some(range => (range.node.type.name === 'html_block' || range.node.type.name === 'table' && range.node.attrs.format === 'html') && step.from >= range.position && step.to <= range.end)) return null;
   if (!step.slice || step.slice.openStart || step.slice.openEnd || !Number.isInteger(step.from) || !Number.isInteger(step.to)) return null;
   const run = parsed.runs.find(item => step.from >= item.position && step.to <= item.position + item.text.length);
   if (!run) return null;
@@ -327,17 +445,44 @@ export function plainTextChange(parsed, transaction) {
 }
 
 export function outlineOf(parsed) {
-  return parsed.ranges.filter(range => range.node.type.name === 'heading').map(range => ({
-    text: range.node.textContent, level: range.node.attrs.level, from: range.from,
-  }));
+  return documentHeadings(parsed.doc).map(heading => {
+    const range = parsed.ranges.find(item => item.position === heading.position);
+    return { text: heading.text, level: heading.level, from: range?.from ?? sourcePosition(parsed, heading.position + 1), position: heading.position };
+  });
 }
 
 export function documentHeadings(doc) {
   const headings = [];
-  doc.forEach((node, position) => {
+  doc.descendants((node, position) => {
     if (node.type.name === 'heading') headings.push({ id: 'inklet_heading_' + (headings.length + 1), text: node.textContent, level: node.attrs.level, position });
+    return node.type.name === 'html_block';
   });
   return headings;
+}
+
+export function documentAnchors(doc) {
+  const anchors = [];
+  let pending = [];
+  doc.descendants((node, position) => {
+    if (node.type.name === 'html_anchor') { const entry = { id: node.attrs.id, position }; anchors.push(entry); pending.push(entry); }
+    else if (node.type.name === 'html_anchor_inline') anchors.push({ id: node.attrs.id, position: position + node.nodeSize });
+    else if ((node.isTextblock && (node.textContent || node.childCount)) || node.type.name === 'mermaid' || node.type.name === 'table') {
+      for (const entry of pending) entry.position = position + (node.isTextblock ? 1 : 0);
+      pending = [];
+    }
+  });
+  return anchors;
+}
+
+export function fragmentTarget(doc, href) {
+  if (!href?.startsWith('#')) return null;
+  let id;
+  try { id = decodeURIComponent(href.slice(1)); } catch { return null; }
+  const anchors = documentAnchors(doc).filter(entry => entry.id === id);
+  if (anchors.length === 1) return anchors[0].position;
+  if (anchors.length > 1) return null;
+  const heading = documentHeadings(doc).find(entry => entry.id === id);
+  return heading ? heading.position + 1 : null;
 }
 
 export function wordStatistics(doc) {

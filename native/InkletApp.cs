@@ -18,8 +18,8 @@ using Microsoft.Web.WebView2.WinForms;
 [assembly: System.Reflection.AssemblyProduct("Inklet")]
 [assembly: System.Reflection.AssemblyCompany("泰安市岱岳区清云智数企业管理咨询工作室")]
 [assembly: System.Reflection.AssemblyCopyright("版权所有 © 2026 泰安市岱岳区清云智数企业管理咨询工作室。保留所有权利。")]
-[assembly: System.Reflection.AssemblyVersion("0.11.4.0")]
-[assembly: System.Reflection.AssemblyFileVersion("0.11.4.0")]
+[assembly: System.Reflection.AssemblyVersion("0.11.9.0")]
+[assembly: System.Reflection.AssemblyFileVersion("0.11.9.0")]
 
 namespace Inklet {
     public sealed class InkletApplication : ApplicationContext {
@@ -55,8 +55,10 @@ namespace Inklet {
         }
         public Task<CoreWebView2Environment> Environment() {
             if (environment == null) {
-                var options = new CoreWebView2EnvironmentOptions();
-                if (!String.IsNullOrEmpty(DebugPort)) options.AdditionalBrowserArguments = "--remote-debugging-port=" + DebugPort + " --remote-debugging-address=127.0.0.1";
+                var options = new CoreWebView2EnvironmentOptions {
+                    AdditionalBrowserArguments = "--disable-renderer-accessibility --disable-features=AccessibilityBlockFlowIterator,AccessibilityPruneRedundantInlineConnectivity" +
+                        (String.IsNullOrEmpty(DebugPort) ? "" : " --remote-debugging-port=" + DebugPort + " --remote-debugging-address=127.0.0.1")
+                };
                 environment = CoreWebView2Environment.CreateAsync(null, Path.Combine(Profile, "webview"), options);
             }
             return environment;
@@ -448,12 +450,38 @@ namespace Inklet {
             Uri source;
             if (!Uri.TryCreate(eventArgs.Source, UriKind.Absolute, out source) || source.Host != "inklet.local" || source.Scheme != "https") return;
             object id = null;
+            Dictionary<string, object> request;
+            string command;
+            Dictionary<string, object> args;
+            try {
+                request = messageJson.Deserialize<Dictionary<string, object>>(eventArgs.WebMessageAsJson);
+                id = request["id"];
+                command = Convert.ToString(request["command"]);
+                args = request.ContainsKey("args") ? (Dictionary<string, object>)request["args"] : new Dictionary<string, object>();
+            } catch (Exception error) {
+                Reply(new { id = id, error = error.Message });
+                return;
+            }
+            if (command == "synthesizeSpeech") {
+                try {
+                    string text = StringValue(args, "text");
+                    string voice = StringValue(args, "voice");
+                    string rate = StringValue(args, "rate");
+                    string pitch = StringValue(args, "pitch", "+0Hz");
+                    string provider = StringValue(args, "provider", "edge");
+                    string endpoint = StringValue(args, "endpoint", "");
+                    string model = StringValue(args, "model", "");
+                    string customVoice = StringValue(args, "customVoice", "");
+                    string apiKey = StringValue(args, "apiKey", "");
+                    object speechResult = await Task.Run(() => SpeechService.SynthesizeAsync(text, voice, rate, pitch, provider, endpoint, model, customVoice, apiKey));
+                    Reply(new { id = id, result = speechResult });
+                } catch (Exception error) {
+                    Reply(new { id = id, error = error.Message });
+                }
+                return;
+            }
             await messages.WaitAsync();
             try {
-                var request = messageJson.Deserialize<Dictionary<string, object>>(eventArgs.WebMessageAsJson);
-                id = request["id"];
-                string command = Convert.ToString(request["command"]);
-                var args = request.ContainsKey("args") ? (Dictionary<string, object>)request["args"] : new Dictionary<string, object>();
                 object result = await Execute(command, args);
                 Reply(new { id = id, result = result });
             } catch (Exception error) {
