@@ -4,7 +4,7 @@ import { keymap } from 'prosemirror-keymap';
 import { baseKeymap, toggleMark, setBlockType, wrapIn, chainCommands } from 'prosemirror-commands';
 import { wrapInList, splitListItem, sinkListItem, liftListItem } from 'prosemirror-schema-list';
 import { tableEditing, columnResizing, goToNextCell, addRowAfter, addColumnAfter, deleteRow, deleteColumn, deleteTable } from 'prosemirror-tables';
-import { parseDocument, richChange, plainTextChange, schema, prosePosition, sourcePosition, documentHeadings, fragmentTarget } from './markdown.js';
+import { parseDocument, richChange, plainTextChange, schema, prosePosition, sourcePosition, atomRangeAt, documentHeadings, fragmentTarget } from './markdown.js';
 import { highlightStyle } from './source-editor.js';
 import { renderOnVisible } from './renderers.js';
 import { codeLanguages, codeSpans, codeStyle, normalizeLanguage, onCodeHighlightingReady } from './code-highlighting.js';
@@ -37,6 +37,9 @@ export class RichEditor {
     this.container = element;
     this.parsed = parseDocument(options.source);
     this.timer = null;
+    this.pointerSelecting = false;
+    this.lockedScrollTop = 0;
+    this.pointerClientY = 0;
     this.tables = new TableViewport(this);
     this.contentsViews = new Set();
     this.visualViews = new Set();
@@ -177,6 +180,11 @@ export class RichEditor {
         },
       },
       dispatchTransaction: transaction => this.dispatch(transaction),
+      handleScrollToSelection: () => {
+        if (!this.pointerSelecting) return false;
+        const rect = element.getBoundingClientRect();
+        return this.pointerClientY >= rect.top + 24 && this.pointerClientY <= rect.bottom - 24;
+      },
       handleDOMEvents: {
         focus: () => { this.flush(); options.focus('rich'); },
         paste: (view, event) => options.paste(event),
@@ -194,22 +202,54 @@ export class RichEditor {
       },
     });
     this.view.dom.style.overflowAnchor = 'none';
+    this.onWindowPointerMove = event => {
+      if (!this.pointerSelecting) return;
+      if ((event.buttons & 1) === 0) {
+        this.pointerSelecting = false;
+        return;
+      }
+      this.pointerClientY = event.clientY;
+    };
+    this.onWindowPointerEnd = () => {
+      if (!this.pointerSelecting) return;
+      this.pointerSelecting = false;
+    };
+    window.addEventListener('pointermove', this.onWindowPointerMove, { passive: true, capture: true });
+    window.addEventListener('pointerup', this.onWindowPointerEnd, { passive: true, capture: true });
+    window.addEventListener('pointercancel', this.onWindowPointerEnd, { passive: true, capture: true });
+    window.addEventListener('dragstart', this.onWindowPointerEnd, { passive: true, capture: true });
+    window.addEventListener('blur', this.onWindowPointerEnd, { passive: true });
+    element.addEventListener('wheel', () => {
+      if (this.pointerSelecting) this.pointerSelecting = false;
+    }, { passive: true });
     element.addEventListener('pointerdown', event => {
+      if (event.button === 0) {
+        const rect = element.getBoundingClientRect();
+        const scrollbarWidth = Math.max(14, element.offsetWidth - element.clientWidth);
+        if (event.clientX < rect.right - scrollbarWidth && !event.target.closest('.table-placeholder')) {
+          this.pointerSelecting = true;
+          this.pointerClientY = event.clientY;
+        }
+      }
       const fragment = event.target.closest('a[href^="#"]:not([data-heading-index])');
       if (fragment && event.button === 0) {
+        this.pointerSelecting = false;
         event.preventDefault(); event.stopPropagation();
         this.navigateFragment(fragment.getAttribute('href'));
         return;
       }
       const link = event.target.closest('.document-toc a[data-heading-index]');
       if (link && event.button === 0) {
+        this.pointerSelecting = false;
         event.preventDefault(); event.stopPropagation();
         this.navigateHeading(headingIntent(documentHeadings(this.parsed.doc), Number(link.dataset.headingIndex)));
         return;
       }
       this.flush();
     }, true);
-    element.addEventListener('scroll', () => options.scroll('rich'), { passive: true });
+    element.addEventListener('scroll', () => {
+      options.scroll('rich');
+    }, { passive: true });
     this.disposeHighlighting = onCodeHighlightingReady(() => this.refresh());
     options.parsed?.(this.parsed.doc);
   }
@@ -233,20 +273,38 @@ export class RichEditor {
     if (position !== null) this.options.navigate(sourcePosition(this.parsed, position));
   }
 
-  destroy() { this.tables.destroy(); this.disposeHighlighting(); clearTimeout(this.timer); this.view.destroy(); }
+  destroy() {
+    window.removeEventListener('pointermove', this.onWindowPointerMove, true);
+    window.removeEventListener('pointerup', this.onWindowPointerEnd, true);
+    window.removeEventListener('pointercancel', this.onWindowPointerEnd, true);
+    window.removeEventListener('dragstart', this.onWindowPointerEnd, true);
+    window.removeEventListener('blur', this.onWindowPointerEnd);
+    this.tables.destroy(); this.disposeHighlighting(); clearTimeout(this.timer); this.view.destroy();
+  }
   decorations(state) {
-    if (!this.parsed || !state.doc.eq(this.parsed.doc)) return DecorationSet.empty;
+    if (!this.parsed || state.doc.content.size !== this.parsed.doc.content.size) return DecorationSet.empty;
     const marks = this.options.marks();
     const cached = this.decorationCache;
-    if (!cached || cached.doc !== state.doc || cached.parsed !== this.parsed || cached.marks !== marks || !cached.selection.eq(state.selection)) {
-      this.decorationCache = { doc: state.doc, parsed: this.parsed, marks, selection: state.selection, ...this.documentDecorations(state, marks) };
+    const newlySelectedUnloaded = cached?.unloadedTables?.some(table => [state.selection.anchor, state.selection.head].some(value => value > table.from && value < table.to));
+    if (!cached || cached.doc !== state.doc || cached.parsed !== this.parsed || cached.marks !== marks || newlySelectedUnloaded) {
+      this.decorationCache = { doc: state.doc, parsed: this.parsed, marks, ...this.documentDecorations(state, marks) };
     }
     const unloaded = this.decorationCache.unloadedTables;
     const matches = [];
+    const active = this.parsed.ranges.find(range => state.selection.from >= range.position && state.selection.from <= range.end);
+    if (active) matches.push(Decoration.node(active.position, active.end, { 'data-active': 'true' }));
     for (const match of this.options.matches()) {
       const from = prosePosition(this.parsed, match.from);
       const to = prosePosition(this.parsed, match.to);
-      if (from < to && !unloaded.some(table => from < table.to && to > table.from)) matches.push(Decoration.inline(from, to, { class: 'search-match' }));
+      const className = match.current ? 'search-match search-match-current' : 'search-match';
+      if (from < to && !unloaded.some(table => from < table.to && to > table.from)) {
+        matches.push(Decoration.inline(from, to, { class: className }));
+      } else {
+        const atom = atomRangeAt(this.parsed, match.from, match.to);
+        if (atom && !unloaded.some(table => atom.from < table.to && atom.to > table.from)) {
+          matches.push(Decoration.node(atom.from, atom.to, { class: className }));
+        }
+      }
     }
     if (Number.isInteger(this.speakingPosition)) {
       const speakingNode = state.doc.nodeAt(this.speakingPosition);
@@ -266,6 +324,7 @@ export class RichEditor {
       if (node.type.name === 'table') {
         const end = position + node.nodeSize;
         const selected = [state.selection.anchor, state.selection.head].some(value => value > position && value < end);
+        if (selected) this.tables.visible.add(node);
         const loaded = state.doc.content.size < 200000 || this.tables.visible.has(node) || selected;
         if (!loaded) unloadedTables.push({ from: position, to: end });
         output.push(Decoration.node(position, end, { 'data-table-active': String(loaded) }));
@@ -282,27 +341,30 @@ export class RichEditor {
       const to = prosePosition(this.parsed, mark.to);
       if (from < to) output.push(Decoration.inline(from, to, { class: 'reading-highlight', style: highlightStyle(mark) }));
     }
-    const active = this.parsed.ranges.find(range => state.selection.from >= range.position && state.selection.from <= range.end);
-    if (active) output.push(Decoration.node(active.position, active.end, { 'data-active': 'true' }));
     return { decorations: DecorationSet.create(state.doc, output), unloadedTables };
   }
 
   dispatch(transaction) {
     const next = this.view.state.applyTransaction(transaction).state;
+    let contentChanged = false;
     if (transaction.docChanged) {
       if (this.parsed.source !== this.options.sourceText()) { this.load(this.options.sourceText()); return; }
       const change = plainTextChange(this.parsed, transaction) || richChange(this.parsed.source, this.parsed.doc, next.doc, this.parsed.ranges);
-      if (change) this.options.change(change);
-      this.parsed = parseDocument(this.options.sourceText());
-      this.options.parsed?.(this.parsed.doc);
+      if (change && (change.from !== change.to || change.insert.length > 0)) {
+        contentChanged = true;
+        this.options.change(change);
+        this.parsed = parseDocument(this.options.sourceText());
+        this.options.parsed?.(this.parsed.doc);
+      }
     }
     this.view.updateState(next);
-    if (transaction.docChanged) this.refreshContents();
+    if (contentChanged) this.refreshContents();
     if (this.view.hasFocus()) {
       const from = sourcePosition(this.parsed, next.selection.from);
       const to = this.hasTextSelection ? sourcePosition(this.parsed, next.selection.to, -1) : from;
       this.options.selection(from, to);
-      if (this.options.typewriter() && !transaction.getMeta('inklet-navigation') && (transaction.docChanged || transaction.selectionSet)) requestAnimationFrame(() => {
+      if (this.options.typewriter() && !this.pointerSelecting && contentChanged && next.selection.empty && !transaction.getMeta('inklet-navigation')) requestAnimationFrame(() => {
+        if (this.pointerSelecting) return;
         try {
           const coords = this.view.coordsAtPos(this.view.state.selection.head);
           this.container.scrollTop += coords.top - this.container.getBoundingClientRect().top - this.container.clientHeight / 2;
@@ -331,6 +393,7 @@ export class RichEditor {
       const position = prosePosition(this.parsed, Math.min(oldPosition, source.length));
       const selection = TextSelection.near(this.parsed.doc.resolve(Math.min(position, this.parsed.doc.content.size)));
       this.view.updateState(EditorState.create({ doc: this.parsed.doc, selection, plugins: this.plugins }));
+      this.tables.loadNearby();
     }
     this.refreshContents();
     this.options.parsed?.(this.parsed.doc);

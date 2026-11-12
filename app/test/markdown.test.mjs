@@ -520,3 +520,52 @@ test('speech prosody preprocessor prevents word splitting on inline pinyin, emph
   const decimalSentence = '3.1 存在冲突或隐患、建议调整的初始化字段（7 项）。';
   assert.deepEqual(splitSpeechSentences(decimalSentence, 220), ['3.1 存在冲突或隐患、建议调整的初始化字段，7 项。']);
 });
+
+test('multi-line Setext headings keep block ranges and search runs aligned for later tables', () => {
+  const source = [
+    '继续',
+    '',
+    '---',
+    '',
+    'name: xerp-common-data-foundation',
+    'description: "通用设计规范。"',
+    '-----------------------------------------------------------------------------------------------------------------------------------------------------',
+    '',
+    '# 标题',
+    '',
+    '| 字段名 | 类型 | SAP 字段映射 |',
+    '| --- | --- | --- |',
+    '| reservation_record_type | string | AFFW-RSART |',
+    '| reservation_type | string | AUFM-RSART |',
+    '',
+    '跨服务复合逻辑引用说明。',
+    '',
+  ].join('\n');
+  const parsed = parseDocument(source);
+  const firstMatch = source.indexOf('AFFW-RSART') + 5;
+  const secondMatch = source.indexOf('AUFM-RSART') + 5;
+  for (const offset of [firstMatch, secondMatch]) {
+    const from = prosePosition(parsed, offset);
+    const to = prosePosition(parsed, offset + 5);
+    assert.equal(to - from, 5);
+    assert.equal(parsed.doc.textBetween(from, to), 'RSART');
+  }
+});
+
+test('non-persisted colwidth changes on Markdown tables do not dirty source or expand later richChange ranges', () => {
+  const source = '# Heading\n\n| Path | Meaning |\n| --- | --- |\n| senderRequests[].objectNumber | COBRA-OBJNR |\n\nLater paragraph.\n';
+  const parsed = parseDocument(source);
+  const state = EditorState.create({ doc: parsed.doc });
+  let cellPos = null;
+  let cellNode = null;
+  state.doc.descendants((node, pos) => {
+    if (cellPos === null && node.type.name === 'table_header') {
+      cellPos = pos;
+      cellNode = node;
+      return false;
+    }
+  });
+  const colResized = state.apply(state.tr.setNodeMarkup(cellPos, null, { ...cellNode.attrs, colwidth: [180] }));
+  assert.equal(richChange(source, parsed.doc, colResized.doc, parsed.ranges), null);
+  assert.equal(colResized.doc.content.size, parsed.doc.content.size);
+});

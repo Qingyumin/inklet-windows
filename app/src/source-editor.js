@@ -77,7 +77,7 @@ export class SourceEditor {
         for (const visible of view.visibleRanges) for (const match of options.matches()) {
           const from = Math.max(match.from, visible.from);
           const to = Math.min(match.to, visible.to);
-          if (from < to) ranges.push(Decoration.mark({ class: 'search-match' }).range(from, to));
+          if (from < to) ranges.push(Decoration.mark({ class: match.current ? 'search-match search-match-current' : 'search-match' }).range(from, to));
         }
         return ranges.length ? this.base.update({ add: ranges, sort: true }) : this.base;
       }
@@ -108,7 +108,7 @@ export class SourceEditor {
             if (this.view?.hasFocus && (update.selectionSet || update.docChanged)) {
               const selection = update.state.selection.main;
               options.selection(selection.from, this.hasTextSelection ? selection.to : selection.from);
-              if (options.typewriter() && !update.transactions.some(transaction => transaction.annotation(synchronized))) requestAnimationFrame(() => this.view.dispatch({ effects: EditorView.scrollIntoView(selection.head, { y: 'center' }) }));
+              if (options.typewriter() && update.docChanged && selection.empty && !update.transactions.some(transaction => transaction.annotation(synchronized))) requestAnimationFrame(() => this.view.dispatch({ effects: EditorView.scrollIntoView(selection.head, { y: 'center' }) }));
             }
           }),
         ],

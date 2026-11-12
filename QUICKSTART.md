@@ -1,4 +1,4 @@
-# Inklet 0.11.9 for Windows
+# Inklet 0.11.13 for Windows
 
 Extract the complete ZIP, keep all files together, and run Inklet.exe.
 Save your documents and close the previous version before switching versions.

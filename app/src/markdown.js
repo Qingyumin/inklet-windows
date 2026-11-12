@@ -45,9 +45,10 @@ const lineBreak = { ...baseSchema.spec.nodes.get('hard_break'),
   parseDOM: [{ tag: 'br[data-source-break="soft"]', getAttrs: () => ({ soft: true }) }, { tag: 'br' }],
 };
 const heading = { ...baseSchema.spec.nodes.get('heading'),
+  content: 'inline*',
   attrs: { level: { default: 1 }, textAlign: { default: null } },
   toDOM: node => ['h' + node.attrs.level, textAlignment(node.attrs.textAlign) ? { style: 'text-align:' + node.attrs.textAlign } : {}, 0],
-  parseDOM: Array.from({ length: 6 }, (_, index) => ({ tag: 'h' + (index + 1), getAttrs: element => ({ level: index + 1, textAlign: textAlignment(element.style.textAlign || element.getAttribute('align')) }) })),
+  parseDOM: Array.from({ length: 6 }, (_, index) => ({ tag: 'h' + (index + 1), getAttrs: element => ({ level: index + 1, get textAlign() { return textAlignment(element.style.textAlign || element.getAttribute('align')); } }) })),
 };
 const anchorSpec = inline => ({
   group: inline ? 'inline' : 'block', inline, atom: true, selectable: false,
@@ -377,25 +378,84 @@ export function parseDocument(source) {
     });
   });
   const runs = [];
+  const atoms = [];
   for (const range of ranges) {
     let cursor = range.from;
     range.node.descendants((node, position) => {
+      const basePos = range.position + 1 + position;
+      if (node.type.name === 'math_inline' && node.attrs.tex) {
+        const raw = '$' + node.attrs.tex + '$';
+        const offset = source.indexOf(raw, cursor);
+        if (offset >= 0 && offset + raw.length <= range.to) {
+          atoms.push({ from: offset, to: offset + raw.length, position: basePos, end: basePos + node.nodeSize, node });
+          cursor = offset + raw.length;
+        }
+        return;
+      }
       if (!node.isText) return;
       const offset = source.indexOf(node.text, cursor);
-      if (offset < 0 || offset + node.text.length > range.to) return;
-      runs.push({ from: offset, to: offset + node.text.length, position: range.position + 1 + position, text: node.text });
-      cursor = offset + node.text.length;
+      if (offset >= 0 && offset + node.text.length <= range.to) {
+        runs.push({ from: offset, to: offset + node.text.length, position: basePos, text: node.text });
+        cursor = offset + node.text.length;
+        return;
+      }
+      for (const delimiter of ['**', '__', '~~', '*', '_']) {
+        for (let split = 1; split < node.text.length; split++) {
+          const left = node.text.slice(0, split);
+          const right = node.text.slice(split);
+          const combined = left + delimiter + right;
+          const found = source.indexOf(combined, cursor);
+          if (found >= 0 && found + combined.length <= range.to) {
+            runs.push({ from: found, to: found + left.length, position: basePos, text: left });
+            const rightStart = found + left.length + delimiter.length;
+            runs.push({ from: rightStart, to: rightStart + right.length, position: basePos + left.length, text: right });
+            cursor = rightStart + right.length;
+            return;
+          }
+        }
+      }
+      const firstChar = node.text[0];
+      let scan = source.indexOf(firstChar, cursor);
+      while (scan >= 0 && scan < range.to) {
+        let srcIdx = scan;
+        let txtIdx = 0;
+        let segStartSrc = scan;
+        let segStartTxt = 0;
+        const subRuns = [];
+        while (txtIdx < node.text.length && srcIdx < range.to) {
+          if (source[srcIdx] === node.text[txtIdx]) {
+            srcIdx++; txtIdx++;
+          } else if ('*_~\\`'.includes(source[srcIdx])) {
+            if (txtIdx > segStartTxt) subRuns.push({ from: segStartSrc, to: srcIdx, position: basePos + segStartTxt, text: node.text.slice(segStartTxt, txtIdx) });
+            while (srcIdx < range.to && '*_~\\`'.includes(source[srcIdx]) && source[srcIdx] !== node.text[txtIdx]) srcIdx++;
+            segStartSrc = srcIdx; segStartTxt = txtIdx;
+          } else break;
+        }
+        if (txtIdx === node.text.length) {
+          if (txtIdx > segStartTxt) subRuns.push({ from: segStartSrc, to: srcIdx, position: basePos + segStartTxt, text: node.text.slice(segStartTxt, txtIdx) });
+          runs.push(...subRuns);
+          cursor = srcIdx;
+          return;
+        }
+        scan = source.indexOf(firstChar, scan + 1);
+      }
     });
   }
-  return { doc, ranges, runs, source };
+  return { doc, ranges, runs, atoms, source };
+}
+
+function sameMarkdownBlock(first, second) {
+  if (first.eq(second)) return true;
+  if (first.type !== second.type || first.type.name !== 'table' || first.attrs.format !== 'markdown' || second.attrs.format !== 'markdown' || first.content.size !== second.content.size) return false;
+  return serializer.serialize(schema.node('doc', null, [first])) === serializer.serialize(schema.node('doc', null, [second]));
 }
 
 export function richChange(source, previous, next, ranges) {
   let first = 0;
-  while (first < previous.childCount && first < next.childCount && previous.child(first).eq(next.child(first))) first++;
+  while (first < previous.childCount && first < next.childCount && sameMarkdownBlock(previous.child(first), next.child(first))) first++;
   if (first === previous.childCount && first === next.childCount) return null;
   let remaining = 0;
-  while (remaining < previous.childCount - first && remaining < next.childCount - first && previous.child(previous.childCount - remaining - 1).eq(next.child(next.childCount - remaining - 1))) remaining++;
+  while (remaining < previous.childCount - first && remaining < next.childCount - first && sameMarkdownBlock(previous.child(previous.childCount - remaining - 1), next.child(next.childCount - remaining - 1))) remaining++;
   const from = ranges[first]?.from ?? source.length;
   const to = Math.max(from, ranges[previous.childCount - remaining - 1]?.to ?? from);
   const children = [];
@@ -422,9 +482,21 @@ export function sourcePosition(parsed, position, association = 1) {
 export function prosePosition(parsed, position) {
   const run = parsed.runs.find(item => position >= item.from && position <= item.to);
   if (run) return run.position + position - run.from;
-  const block = parsed.ranges.find(item => position >= item.from && position <= item.to);
+  const atom = parsed.atoms?.find(item => position >= item.from && position <= item.to);
+  if (atom) return position <= atom.from ? atom.position : atom.end;
+  const block = parsed.ranges.findLast(item => position >= item.from && position <= item.to);
   if (block) return Math.min(block.position + 1, parsed.doc.content.size);
   return Math.max(0, parsed.doc.content.size - 1);
+}
+
+export function atomRangeAt(parsed, from, to = from) {
+  const inlineAtom = parsed.atoms?.find(item => from < item.to && to > item.from);
+  if (inlineAtom) return { from: inlineAtom.position, to: inlineAtom.end, node: inlineAtom.node };
+  const block = parsed.ranges.findLast(item => from >= item.from && from <= item.to);
+  if (block && ['mermaid', 'math_block', 'front_matter', 'toc', 'page_break'].includes(block.node.type.name)) {
+    return { from: block.position, to: block.end, node: block.node };
+  }
+  return null;
 }
 
 export function plainTextChange(parsed, transaction) {

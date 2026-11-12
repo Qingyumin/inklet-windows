@@ -20,7 +20,7 @@ import { call, assetUrl, desktop, digest, selectDocument } from './bridge.js';
 import { sample } from './sample.js';
 import { codeLanguages, codeColorDefaults, codeColorLabels, codePalette } from './code-highlighting.js';
 import { headingIntent } from './document-toc.js';
-import { groupSearchMatches } from './search-engine.js';
+import { groupSearchMatches, captureSearchCursor, mapSearchCursor, resolveSearchCursor, stepSearchCursor } from './search-engine.js';
 import { renderMarkup } from './renderers.js';
 import { interfaceFamilies, interfaceThemes, paperFamilies, paperThemes as themes, paneCodeColors } from './appearance.js';
 import { isImagePlaceholder } from './image-references.js';
@@ -38,6 +38,10 @@ const readingFonts = {
   kai: "'LXGW WenKai', 'KaiTi', 'STKaiti', 'Noto Serif SC', 'SimSun', serif",
 };
 const releaseNotes = [
+  ['0.11.13', '修复大文档表格偶发停留占位需多次点击问题，加固即时渲染', '2026-11-12'],
+  ['0.11.12', '鼠标点击放置光标与划词复制时锁定当前视口，不再跳中或连滚多行', '2026-11-10'],
+  ['0.11.11', '搜索定位后修改正文保持当前匹配序号，继续点击下一个顺延跳转', '2026-11-10'],
+  ['0.11.10', '修复多行Setext标题后搜索失准，醒目标记当前命中', '2026-11-09'],
   ['0.11.9', '优化朗读防拆词韵律，扩充16款音色与选段试听', '2026-11-07'],
   ['0.11.8', '新增专业书籍神经网络朗读，收窄设置背景色块', '2026-11-07'],
   ['0.11.7', '阅读高亮栏仅在划词选中文字时出现，纯光标不弹出', '2026-10-31'],
@@ -88,6 +92,8 @@ let results = [];
 let paintedResults = [];
 let totalResults = 0;
 let selectedResult = -1;
+let searchCursor = null;
+let pendingSearchStep = 0;
 let resultsRevision = -1;
 let searchFailed = false;
 let searching = false;
@@ -289,8 +295,12 @@ document.querySelector('#app').innerHTML = `
 `;
 createIcons({ icons: iconSet, attrs: { 'stroke-width': 1.7 } });
 const find = selector => document.querySelector(selector);
-const matchesForSource = () => paintedResults;
-const matchesForRich = () => selectedResult >= 250 && results[selectedResult] ? [...paintedResults.slice(0, 250), results[selectedResult]] : paintedResults.slice(0, 250);
+const matchesForSource = () => paintedResults.map((match, index) => index === selectedResult ? { ...match, current: true } : match);
+const matchesForRich = () => {
+  const slice = paintedResults.slice(0, 250).map((match, index) => index === selectedResult ? { ...match, current: true } : match);
+  const current = results[selectedResult] || paintedResults[selectedResult];
+  return selectedResult >= 250 && current ? [...slice, { ...current, current: true }] : slice;
+};
 const common = {
   source: documentSession.source, marks: () => documentSession.highlights,
   codeColors: () => settings.codeColors || {},
@@ -547,7 +557,7 @@ async function switchDocument(id, internal = false) {
     find('#external-change').hidden = true;
     find('#image-access').hidden = true;
     richEditor.pending = undefined;
-    results = []; paintedResults = []; totalResults = 0; selectedResult = -1; resultsRevision = -1; searchId++; searchGroups = [];
+    results = []; paintedResults = []; totalResults = 0; selectedResult = -1; searchCursor = null; pendingSearchStep = 0; resultsRevision = -1; searchId++; searchGroups = [];
     sourceEditor.setText(documentSession.source);
     richEditor.load(documentSession.source, entry.rendered);
     for (const candidate of workspace.entries.values()) if (!candidate.state || candidate.id === id) candidate.rendered = null;
@@ -794,11 +804,12 @@ function changed() {
   updateStatus();
   clearTimeout(outlineTimer);
   outlineTimer = setTimeout(updateNavigation, 180);
-  if (!find('#search-panel').hidden && find('#search-input').value) scheduleSearch();
+  if (!find('#search-panel').hidden && find('#search-input').value) scheduleSearch(true);
   recoveryWriter?.schedule();
 }
 function changeDocument(change, origin) {
   if (!documentSession.replace(change)) return;
+  searchCursor = mapSearchCursor(searchCursor, change);
   searchWorker.postMessage({ type: 'change', change, revision: documentSession.revision });
   if (origin !== 'source') sourceEditor.replace(change);
   if (origin !== 'rich') richEditor.schedule(documentSession.source);
@@ -808,7 +819,11 @@ function history(action) {
   richEditor.flush();
   const before = documentSession.source;
   if (!documentSession[action]()) return false;
-  if (before !== documentSession.source) sourceEditor.replace(minimalChange(before, documentSession.source));
+  if (before !== documentSession.source) {
+    const diff = minimalChange(before, documentSession.source);
+    searchCursor = mapSearchCursor(searchCursor, diff);
+    sourceEditor.replace(diff);
+  }
   richEditor.load(documentSession.source);
   sourceEditor.refresh();
   searchWorker.postMessage({ type: 'document', source: documentSession.source, revision: documentSession.revision });
@@ -1164,7 +1179,7 @@ async function loadDocument(data, restored = false) {
   selection = { from: 0, to: 0 };
   sourceEditor.setText(documentSession.source);
   richEditor.load(documentSession.source);
-  results = []; paintedResults = []; totalResults = 0; resultsRevision = -1; selectedResult = -1; searchId++;
+  results = []; paintedResults = []; totalResults = 0; resultsRevision = -1; selectedResult = -1; searchCursor = null; pendingSearchStep = 0; searchId++;
   searchWorker.postMessage({ type: 'document', source: documentSession.source, revision: documentSession.revision });
   find('#selection-tools').hidden = true;
   sourceEditor.view.scrollDOM.scrollTop = 0;
@@ -1559,12 +1574,14 @@ function toggleSearch(show = find('#search-panel').hidden) {
     find('#selection-tools').hidden = true;
     find('#search-input').focus({ preventScroll: true });
     find('#search-input').select();
-    if (find('#search-input').value || results.length || paintedResults.length) scheduleSearch();
+    searchCursor = null; pendingSearchStep = 0;
+    if (find('#search-input').value || results.length || paintedResults.length) scheduleSearch(false);
     else reportSearchState();
   } else {
-    clearTimeout(searchTimer); searchId++; searching = false;
+    clearTimeout(searchTimer); searchTimer = null; searchId++; searching = false;
+    searchCursor = null; pendingSearchStep = 0;
     if (searchPaintFrame !== null) { cancelAnimationFrame(searchPaintFrame); searchPaintFrame = null; }
-    invalidateSearch(true);
+    invalidateSearch(true, false);
     sourceEditor.refreshSearch();
     richEditor.refreshSearch();
     reportSearchState();
@@ -1621,50 +1638,80 @@ function refreshSearchPresentation() {
     richEditor.refreshSearch();
   });
 }
-function invalidateSearch(clearPainted = true) {
+function invalidateSearch(clearPainted = true, preserveSelection = false) {
+  const keep = preserveSelection === true;
+  if (!keep) {
+    searchCursor = null;
+    pendingSearchStep = 0;
+  } else if (!searchCursor && selectedResult >= 0 && results[selectedResult]) {
+    searchCursor = captureSearchCursor(documentSession.source, results, totalResults, selectedResult);
+  }
   const painted = clearPainted && paintedResults.length > 0;
   if (clearPainted) paintedResults = [];
   results = []; totalResults = 0; selectedResult = -1; resultsRevision = -1;
-  find('#search-count').textContent = '0 处';
-  find('#search-time').textContent = '';
-  for (const action of ['previous', 'next', 'replace', 'replace-all']) find(`#search-panel [data-action="${action}"]`).disabled = true;
+  if (!keep || !searchCursor) {
+    find('#search-count').textContent = '0 处';
+    find('#search-time').textContent = '';
+    for (const action of ['previous', 'next', 'replace', 'replace-all']) find(`#search-panel [data-action="${action}"]`).disabled = true;
+  }
   if (painted) refreshSearchPresentation();
   renderSearchResults();
 }
-function scheduleSearch() {
-  clearTimeout(searchTimer); searchId++;
+function runSearchWorkerNow() {
+  if (searchTimer) { clearTimeout(searchTimer); searchTimer = null; }
+  reportSearchState();
+  if (searchFailed) {
+    searchWorker = new Worker(new URL('./search-worker.js', import.meta.url), { type: 'module' });
+    searchWorker.onmessage = receiveSearchResults;
+    searchWorker.onerror = handleSearchFailure;
+    searchWorker.addEventListener('messageerror', handleSearchFailure);
+    searchWorker.postMessage({ type: 'document', source: documentSession.source, revision: documentSession.revision });
+    searchFailed = false;
+  }
+  searchWorker.postMessage({ type: 'search', id: searchId, revision: documentSession.revision, query: find('#search-input').value, options: { sensitive: find('#case-toggle').getAttribute('aria-pressed') === 'true' } });
+}
+function scheduleSearch(preserveSelection = false) {
+  const keep = preserveSelection === true;
+  clearTimeout(searchTimer); searchTimer = null; searchId++;
   searching = !find('#search-panel').hidden && !!find('#search-input').value;
-  invalidateSearch(!searching);
+  invalidateSearch(!searching, keep);
   if (!searching) { reportSearchState(); return; }
-  find('#search-count').textContent = '查找中...';
+  if (!keep || !searchCursor) find('#search-count').textContent = '查找中...';
   searchTimer = setTimeout(() => {
-    reportSearchState();
-    if (searchFailed) {
-      searchWorker = new Worker(new URL('./search-worker.js', import.meta.url), { type: 'module' });
-      searchWorker.onmessage = receiveSearchResults;
-      searchWorker.onerror = handleSearchFailure;
-      searchWorker.addEventListener('messageerror', handleSearchFailure);
-      searchWorker.postMessage({ type: 'document', source: documentSession.source, revision: documentSession.revision });
-      searchFailed = false;
-    }
-    searchWorker.postMessage({ type: 'search', id: searchId, revision: documentSession.revision, query: find('#search-input').value, options: { sensitive: find('#case-toggle').getAttribute('aria-pressed') === 'true' } });
+    searchTimer = null;
+    runSearchWorkerNow();
   }, 80);
 }
 function receiveSearchResults(event) {
   if (find('#search-panel').hidden || event.data.id !== searchId || event.data.revision !== documentSession.revision) return;
   results = event.data.matches.slice(0, 5000).filter(match => Number.isInteger(match.from) && Number.isInteger(match.to) && match.from >= 0 && match.to > match.from && match.to <= documentSession.source.length);
   paintedResults = results;
-  totalResults = event.data.count; selectedResult = -1; resultsRevision = documentSession.revision; searching = false;
-  find('#search-count').textContent = totalResults.toLocaleString() + ' 处' + (totalResults > results.length ? ' · 前 ' + results.length : '');
+  totalResults = event.data.count;
+  resultsRevision = documentSession.revision;
+  searching = false;
+  searchCursor = resolveSearchCursor(documentSession.source, results, totalResults, searchCursor);
+  if (searchCursor) {
+    selectedResult = searchCursor.consumed ? searchCursor.index - 1 : searchCursor.index;
+    const displayNum = searchCursor.consumed ? Math.max(1, searchCursor.index) : selectedResult + 1;
+    find('#search-count').textContent = displayNum + ' / ' + totalResults.toLocaleString();
+  } else {
+    selectedResult = -1;
+    find('#search-count').textContent = totalResults.toLocaleString() + ' 处' + (totalResults > results.length ? ' · 前 ' + results.length : '');
+  }
   find('#search-time').textContent = Math.round(event.data.duration) + ' ms';
   for (const action of ['previous', 'next', 'replace', 'replace-all']) find(`#search-panel [data-action="${action}"]`).disabled = !results.length || (action === 'replace-all' && totalResults > results.length);
   refreshSearchPresentation();
   renderSearchResults();
   reportSearchState();
+  if (pendingSearchStep !== 0 && results.length) {
+    const step = pendingSearchStep;
+    pendingSearchStep = 0;
+    nextMatch(step);
+  }
 }
 function handleSearchFailure(event) {
   event.preventDefault();
-  clearTimeout(searchTimer);
+  clearTimeout(searchTimer); searchTimer = null;
   searchFailed = true;
   searching = false;
   searchWorker.terminate();
@@ -1678,14 +1725,21 @@ searchWorker.onmessage = receiveSearchResults;
 searchWorker.onerror = handleSearchFailure;
 searchWorker.addEventListener('messageerror', handleSearchFailure);
 function nextMatch(direction) {
+  richEditor.flush();
+  if (searching || (resultsRevision !== documentSession.revision && !find('#search-panel').hidden && find('#search-input').value)) {
+    pendingSearchStep = direction;
+    if (searchTimer) runSearchWorkerNow();
+    return;
+  }
   if (!results.length || resultsRevision !== documentSession.revision) return;
-  selectMatch((selectedResult + direction + results.length) % results.length);
+  const nextIndex = stepSearchCursor(searchCursor, results.length, direction);
+  if (nextIndex >= 0) selectMatch(nextIndex);
 }
 function selectMatch(index) {
   if (!results[index] || resultsRevision !== documentSession.revision) return;
-  const previousSelected = selectedResult;
   selectedResult = index;
-  if (index >= 250 || previousSelected >= 250) refreshSearchPresentation();
+  searchCursor = captureSearchCursor(documentSession.source, results, totalResults, index);
+  refreshSearchPresentation();
   const match = results[selectedResult];
   reveal(match.from, match.to);
   find('#search-count').textContent = (selectedResult + 1) + ' / ' + totalResults.toLocaleString();
@@ -1693,10 +1747,10 @@ function selectMatch(index) {
 }
 function replaceCurrent() {
   if (!results.length || resultsRevision !== documentSession.revision) return;
-  if (selectedResult < 0) nextMatch(1);
+  if (selectedResult < 0 || searchCursor?.consumed) nextMatch(1);
   const match = results[selectedResult];
+  if (!match) return;
   changeDocument({ ...match, insert: find('#replace-input').value }, 'command');
-  results = []; paintedResults = []; selectedResult = -1; scheduleSearch();
 }
 async function replaceAll() {
   if (!results.length || resultsRevision !== documentSession.revision) return;
@@ -2179,7 +2233,7 @@ applySettings(false); updateStatus(); updateNavigation(); setNavigationTab(navig
 if (incomingTransfer) { find('#app').inert = true; find('#app').dataset.windowTransfer = 'receiving'; }
 searchWorker.postMessage({ type: 'document', source: documentSession.source, revision: documentSession.revision });
 Promise.resolve(startupState).then(async response => {
-  settings = { ...settings, ...response.settings };
+  settings = { ...settings, ...response.settings, typewriter: false };
   if (!settings.shortcuts || validateShortcuts(settings.shortcuts)) settings.shortcuts = {};
   if (response.settings?.backgroundPaletteVersion === undefined) {
     const legacyReading = { gray: 'paper', cyan: 'cyan', ink: 'ink-paper' };

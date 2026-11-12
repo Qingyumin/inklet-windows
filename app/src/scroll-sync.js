@@ -216,24 +216,44 @@ export class ScrollSynchronizer {
     if (anchor.edge) next = anchor.edge === 'start' ? 0 : Math.max(0, container.scrollHeight - container.clientHeight);
     else {
       const index = this.sourceIndex(anchor.from);
-      if (pane === 'rich' && anchor.text !== undefined) this.rich.tables?.ensure(this.rich.parsed.ranges[index].position + 1);
+      if (pane === 'rich') this.rich.tables?.ensure(this.rich.parsed.ranges[index].position + 1);
       const box = this.blockBox(pane, index);
       if (!box) return false;
       let screenY = box.top + (box.bottom - box.top) * anchor.progress;
       if (anchor.text !== undefined) {
         const run = this.rich.parsed.runs.find(item => anchor.text >= item.from && anchor.text <= item.to);
         if (run) {
+          const prosePos = run.position + anchor.text - run.from;
           const coordinates = pane === 'source'
             ? this.source.view.coordsAtPos(clamp(anchor.text, 0, this.source.view.state.doc.length))
-            : this.rich.view.coordsAtPos(run.position + anchor.text - run.from);
-          if (coordinates) screenY = coordinates.top + (coordinates.bottom - coordinates.top) * anchor.lineProgress;
+            : this.rich.view.coordsAtPos(prosePos);
+          if (coordinates) {
+            screenY = coordinates.top + (coordinates.bottom - coordinates.top) * anchor.lineProgress;
+            if (pane === 'rich' && this.navigating) {
+              const domPos = this.rich.view.domAtPos(prosePos);
+              const domNode = domPos?.node;
+              const element = domNode?.nodeType === 1 ? domNode : domNode?.parentElement;
+              const tableBox = element?.closest?.('.inklet-table');
+              if (tableBox && tableBox.scrollWidth > tableBox.clientWidth) {
+                const tableBounds = tableBox.getBoundingClientRect();
+                if (coordinates.left < tableBounds.left + 20 || coordinates.right > tableBounds.right - 20) {
+                  tableBox.scrollLeft = clamp(tableBox.scrollLeft + coordinates.left - tableBounds.left - tableBox.clientWidth * 0.25, 0, tableBox.scrollWidth - tableBox.clientWidth);
+                  this.rich.tables?.scrolls?.set(this.rich.parsed.ranges[index].node, tableBox.scrollLeft);
+                }
+              }
+            }
+          }
         }
       }
       next = clamp(container.scrollTop + screenY - container.getBoundingClientRect().top - 2 - container.clientHeight * (anchor.viewportFraction || 0), 0, Math.max(0, container.scrollHeight - container.clientHeight));
     }
-    if (Math.abs(next - container.scrollTop) < 0.75) return false;
+    if (Math.abs(next - container.scrollTop) < 0.75) {
+      if (pane === 'rich') this.rich.tables?.loadNearby();
+      return false;
+    }
     container.scrollTop = next;
     this.expected.set(pane, container.scrollTop);
+    if (pane === 'rich') this.rich.tables?.loadNearby();
     return true;
   }
 
