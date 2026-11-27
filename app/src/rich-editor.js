@@ -435,7 +435,7 @@ export class RichEditor {
       const transaction = this.view.state.tr.setSelection(TextSelection.create(this.view.state.doc, begin, end)).setMeta('inklet-navigation', true);
       this.view.dispatch(scroll ? transaction.scrollIntoView() : transaction);
     } else {
-      const range = this.parsed.ranges.find(item => item.to >= from);
+      const range = this.parsed.ranges.findLast(item => from >= item.from && from <= item.to) || this.parsed.ranges.find(item => item.to >= from);
       const element = range && this.view.nodeDOM(range.position);
       if (element?.getBoundingClientRect) this.container.scrollTop += element.getBoundingClientRect().top - this.container.getBoundingClientRect().top;
     }

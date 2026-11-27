@@ -134,13 +134,21 @@ export class TableViewport {
       if (item.active && box.height > 0) this.heights.set(item.node, box.height);
       const nearby = box.bottom >= bounds.top - 1200 && box.top <= bounds.bottom + 1200;
       if (!item.active && nearby) { this.visible.add(item.node); changed = true; }
-      else if (item.active && this.editor.parsed.doc.content.size >= 200000 && !this.selected(item) && (box.bottom < bounds.top - 3000 || box.top > bounds.bottom + 3000)) {
+      else if (item.active && this.editor.parsed.doc.content.size >= 200000 && !this.selected(item) && !this.pinned(item) && (box.bottom < bounds.top - 3000 || box.top > bounds.bottom + 3000)) {
         if (box.height > 0) this.heights.set(item.node, box.height);
         this.scrolls.set(item.node, item.dom.scrollLeft);
         if (this.visible.has(item.node)) { this.visible.delete(item.node); changed = true; }
       }
     }
     if (changed) this.scheduleRefresh();
+  }
+
+  pinned(item) {
+    if (!this.pinnedRange || performance.now() >= this.pinnedRange.until) return false;
+    const start = item.getPos();
+    if (start == null) return false;
+    const end = start + item.node.nodeSize;
+    return end >= this.pinnedRange.from && start <= this.pinnedRange.to;
   }
 
   selected(item, view = this.editor.view) {
@@ -252,6 +260,7 @@ export class TableViewport {
   }
 
   ensure(position) {
+    this.pinnedRange = { from: position - 600, to: position + 300, until: performance.now() + 800 };
     let changed = false;
     for (const item of this.entries.values()) {
       const start = item.getPos();
@@ -262,7 +271,6 @@ export class TableViewport {
       }
     }
     if (changed) this.flushRefresh();
-    this.loadNearby();
   }
 
   destroy() {

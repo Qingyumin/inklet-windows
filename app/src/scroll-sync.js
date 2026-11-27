@@ -20,10 +20,13 @@ export class ScrollSynchronizer {
       const element = this.container(pane);
       const claim = event => {
         if (event.type === 'keydown' && ['Control', 'Shift', 'Alt', 'Meta'].includes(event.key)) return;
+        const previousOwner = this.owner;
         this.owner = pane;
         this.expected.delete(pane);
-        this.anchor = null;
         this.navigating = false;
+        if (previousOwner !== pane || !this.anchor) {
+          this.recapture = true;
+        }
         this.framesRemaining = 8;
       };
       for (const event of ['wheel', 'pointerdown', 'touchstart', 'keydown', 'focusin']) {
@@ -53,8 +56,7 @@ export class ScrollSynchronizer {
     const expected = this.expected.get(pane);
     if (expected !== undefined && Math.abs(this.container(pane).scrollTop - expected) < 2) return;
     if (this.navigating) { this.schedule(); return; }
-    if (!this.enabled()) { this.anchor = null; return; }
-    if (this.owner && this.owner !== pane) return;
+    if (this.owner && this.owner !== pane && this.enabled()) return;
     this.owner = pane;
     this.recapture = true;
     this.adjustments = 0;
@@ -63,7 +65,9 @@ export class ScrollSynchronizer {
   }
 
   refresh() {
-    if (!this.enabled() && !this.navigating) { this.anchor = null; return; }
+    if (!this.owner) {
+      this.owner = this.visible('rich') ? 'rich' : this.visible('source') ? 'source' : null;
+    }
     if (!this.owner) return;
     if (performance.now() - this.lastFrameAt > 200) this.framesRemaining = 8;
     this.adjustments = 0;
@@ -258,7 +262,7 @@ export class ScrollSynchronizer {
   }
 
   synchronize() {
-    if (!this.owner || (!this.enabled() && !this.navigating)) return;
+    if (!this.owner) return;
     this.rich.flush();
     if (!this.rich.parsed.ranges.length) return;
     if (this.document !== this.rich.parsed.source) this.navigating = false;
@@ -268,14 +272,14 @@ export class ScrollSynchronizer {
       if ((sourceChanged || richChanged) && this.adjustments++ < 3) this.schedule();
       return;
     }
-    if (!this.enabled()) return;
     const recapture = !this.navigating && (this.recapture || !this.anchor || this.document !== this.rich.parsed.source);
     this.recapture = false;
     if (recapture) this.anchor = this.capture(this.owner);
     this.document = this.rich.parsed.source;
     if (!this.anchor) return;
-    if (!recapture) this.apply(this.owner, this.anchor);
-    const changed = this.apply(this.owner === 'source' ? 'rich' : 'source', this.anchor);
+    let changed = false;
+    if (!recapture) changed = this.apply(this.owner, this.anchor) || changed;
+    if (this.enabled()) changed = this.apply(this.owner === 'source' ? 'rich' : 'source', this.anchor) || changed;
     if (changed && this.adjustments++ < 3) this.schedule();
   }
 

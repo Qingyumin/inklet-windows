@@ -30,6 +30,8 @@ dialog{border:1px solid #d6e0d6;border-radius:8px;padding:0;color:#304737;backgr
 	text-wrap: pretty;
 	color: #303831;
 }
+.rich-pane[data-full-width="true"] #rich-editor { padding-left: 28px; padding-right: 28px; }
+.rich-pane[data-full-width="true"] .ProseMirror { max-width: none; width: 100%; }
 .rich-pane .ProseMirror p {
 	font-family: inherit;
 	font-size: 1em;
@@ -354,7 +356,8 @@ dialog{border:1px solid #d6e0d6;border-radius:8px;padding:0;color:#304737;backgr
 .sidebar-resizer:hover::after, .sidebar-resizer:focus-visible::after, .sidebar-sizing .sidebar-resizer::after { background: var(--ui-accent, #547863); }
 .app-body[data-outline-side="right"] .sidebar-resizer { right: auto; left: -7px; }
 .sidebar-sizing, .sidebar-sizing * { cursor: col-resize !important; user-select: none !important; }
-.sidebar-expanded .outline-item { white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
+.sidebar[data-outline-wrap="true"] .outline-item, .sidebar:not([data-outline-wrap="false"]).sidebar-expanded .outline-item { white-space: normal; overflow-wrap: anywhere; word-break: break-word; text-overflow: clip; }
+.sidebar[data-outline-wrap="false"] .outline-item { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; word-break: normal; }
 .sidebar-heading .icon-button { border-radius: 7px; }
 .sidebar-heading.workspace-tabs { display: flex; align-items: center; gap: 2px; padding: 0 8px 6px; }
 .workspace-tabs .nav-tabs { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr) minmax(0, 1.3fr); flex: 1; min-width: 0; gap: 2px; margin: 0; }

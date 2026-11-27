@@ -38,6 +38,9 @@ const readingFonts = {
   kai: "'LXGW WenKai', 'KaiTi', 'STKaiti', 'Noto Serif SC', 'SimSun', serif",
 };
 const releaseNotes = [
+  ['0.11.16', '阅读宽度扩展至1920px并支持自适应铺满窗口，消除宽表两侧留白', '2026-11-19'],
+  ['0.11.15', '阅读设置新增目录换行开关，跨章节表格预加载防提前释放', '2026-11-19'],
+  ['0.11.14', '拖动目录分隔线或缩放分栏宽度时锁定当前章节定位', '2026-11-19'],
   ['0.11.13', '修复大文档表格偶发停留占位需多次点击问题，加固即时渲染', '2026-11-12'],
   ['0.11.12', '鼠标点击放置光标与划词复制时锁定当前视口，不再跳中或连滚多行', '2026-11-10'],
   ['0.11.11', '搜索定位后修改正文保持当前匹配序号，继续点击下一个顺延跳转', '2026-11-10'],
@@ -83,7 +86,7 @@ const startupDocument = startupSession ? { ...startupSession.info, id: startupSe
 let documentSession = startupSession ? DocumentSession.restore(startupSession.session) : new DocumentSession(startupDocument.text || '');
 const startupHighlights = restoreHighlights(documentSession.source, startupDocument.annotations?.marks, !!startupDocument.hash && startupDocument.annotations?.textHash === startupDocument.hash);
 if (!startupSession) { documentSession.highlights = startupHighlights.highlights; documentSession.unresolved = startupHighlights.unresolved; }
-let settings = { leftTheme: 'white', rightTheme: 'white', backgroundPaletteVersion: 1, interfaceTheme: 'jade', ctrlWheelZoom: true, separateWindows: false, embedImages: false, restoreReadingPosition: false, fontSize: 18, readingFont: 'book', lineHeight: 2.05, paragraphGap: 1, readingWidth: 720, paperTexture: true, opacity: 0.3, source: true, rich: true, sidebar: true, outlineSide: 'left', shortcuts: {}, focus: false, typewriter: false, syncScroll: true, searchResults: false, compress: false, speechVoice: defaultSpeechVoice, speechRate: defaultSpeechRate, speechPitch: defaultSpeechPitch, speechStopMode: 'continuous', speechSkipCode: true, speechProvider: 'edge', speechEndpoint: '', speechModel: 'tts-1', speechCustomVoice: 'alloy', speechApiKey: '' };
+let settings = { leftTheme: 'white', rightTheme: 'white', backgroundPaletteVersion: 1, interfaceTheme: 'jade', ctrlWheelZoom: true, separateWindows: false, embedImages: false, restoreReadingPosition: false, fontSize: 18, readingFont: 'book', lineHeight: 2.05, paragraphGap: 1, readingWidth: 720, readingFullWidth: false, paperTexture: true, opacity: 0.3, source: true, rich: true, sidebar: true, outlineSide: 'left', outlineWrap: true, shortcuts: {}, focus: false, typewriter: false, syncScroll: true, searchResults: false, compress: false, speechVoice: defaultSpeechVoice, speechRate: defaultSpeechRate, speechPitch: defaultSpeechPitch, speechStopMode: 'continuous', speechSkipCode: true, speechProvider: 'edge', speechEndpoint: '', speechModel: 'tts-1', speechCustomVoice: 'alloy', speechApiKey: '' };
 let documentInfo = { name: startupDocument.name, path: startupDocument.path || null, hash: startupDocument.hash || null };
 let savedRevision = startupSession ? startupSession.savedRevision : startupDocument.restored ? -1 : 0;
 let activePane = 'rich';
@@ -230,6 +233,7 @@ document.querySelector('#app').innerHTML = `
   <dialog id="settings-dialog" class="settings-dialog"><form method="dialog"><div class="dialog-heading"><h2>阅读设置</h2><button class="icon-button" aria-label="关闭设置">${icon('x')}</button></div><div class="settings-content">
     <fieldset><legend>客户端主题</legend><label class="select-setting family-setting" for="interface-family-input">色系<select id="interface-family-input">${familyOptions(interfaceFamilies)}</select></label><div class="interface-themes">${Object.entries(interfaceThemes).map(([key, theme]) => `<button type="button" class="interface-theme" data-interface-theme="${key}" aria-pressed="false"><span style="background:linear-gradient(135deg,${theme.base},${theme.secondary})"></span>${theme.name}</button>`).join('')}</div></fieldset>
     <label class="select-setting" for="outline-side-input">大纲位置<select id="outline-side-input"><option value="left">左侧</option><option value="right">右侧</option></select></label>
+    <label class="checkbox-setting"><input id="outline-wrap-input" type="checkbox">目录换行</label>
     <button type="button" class="small-command shortcut-settings-button" data-action="shortcuts">自定义快捷键</button>
     <fieldset><legend>源码背景</legend><label class="select-setting family-setting" for="source-family-input">色系<select id="source-family-input" data-paper-family="leftTheme">${familyOptions(paperFamilies)}</select></label><div class="theme-options">${backgroundOptions('leftTheme')}</div></fieldset>
     <fieldset><legend>阅读背景</legend><label class="select-setting family-setting" for="reader-family-input">色系<select id="reader-family-input" data-paper-family="rightTheme">${familyOptions(paperFamilies)}</select></label><div class="theme-options">${backgroundOptions('rightTheme')}</div></fieldset>
@@ -239,7 +243,8 @@ document.querySelector('#app').innerHTML = `
     <label class="range-setting">正文字号 <output id="font-output">17 px</output><input id="font-input" type="range" min="14" max="24" step="1"></label>
     <label class="range-setting">行距 <output id="line-height-output">2.05 倍</output><input id="line-height-input" type="range" min="1.6" max="2.6" step="0.05"></label>
     <label class="range-setting">段间距 <output id="paragraph-gap-output">1.0 倍</output><input id="paragraph-gap-input" type="range" min="0.5" max="1.6" step="0.1"></label>
-    <label class="range-setting">阅读宽度 <output id="reading-width-output">720 px</output><input id="reading-width-input" type="range" min="520" max="960" step="40"></label>
+    <label class="range-setting">阅读宽度 <output id="reading-width-output">720 px</output><input id="reading-width-input" type="range" min="520" max="1920" step="40"></label>
+    <label class="checkbox-setting"><input id="reading-full-width-input" type="checkbox">阅读区自适应铺满窗口（消除两侧留白）</label>
     <label class="range-setting">高亮不透明度 <output id="opacity-output">30%</output><input id="opacity-input" type="range" min="15" max="50" step="5"></label>
     <label class="checkbox-setting"><input id="sync-input" type="checkbox">两栏同步滚动</label>
     <label class="checkbox-setting"><input id="restore-reading-input" type="checkbox">打开时恢复阅读位置</label>
@@ -979,6 +984,7 @@ function applySidebarWidth(value = settings.sidebarWidth) {
   handle.setAttribute('aria-valuemax', String(limits.maximum));
   handle.setAttribute('aria-valuenow', String(width));
   handle.setAttribute('aria-valuetext', width + ' 像素');
+  scrollSync?.refresh();
   scheduleOutlineFollow();
   return width;
 }
@@ -1060,12 +1066,18 @@ function applySettings(persist = true) {
   document.documentElement.style.setProperty('--reading-font', readingFonts[settings.readingFont] || readingFonts.book);
   document.documentElement.style.setProperty('--reading-line-height', Math.max(1.6, Math.min(2.6, Number(settings.lineHeight) || 2.05)));
   document.documentElement.style.setProperty('--reading-paragraph-gap', Math.max(0.5, Math.min(1.6, Number(settings.paragraphGap) || 1)) + 'em');
-  document.documentElement.style.setProperty('--reading-width', Math.max(520, Math.min(960, Number(settings.readingWidth) || 720)) + 'px');
+  const clampedReadingWidth = Math.max(520, Math.min(1920, Number(settings.readingWidth) || 720));
+  const fullWidth = settings.readingFullWidth === true;
+  document.documentElement.style.setProperty('--reading-width', fullWidth ? '100%' : clampedReadingWidth + 'px');
+  find('.rich-pane').dataset.fullWidth = String(fullWidth);
   find('.source-pane').dataset.paper = String(sourceBackground.paper && settings.paperTexture !== false);
   find('.rich-pane').dataset.paper = String(readingBackground.paper && settings.paperTexture !== false);
   document.body.classList.toggle('hide-sidebar', !settings.sidebar || settings.focus);
   find('.app-body').dataset.outlineSide = settings.outlineSide === 'right' ? 'right' : 'left';
   find('#outline-side-input').value = settings.outlineSide === 'right' ? 'right' : 'left';
+  const outlineWrap = settings.outlineWrap !== false;
+  find('#outline-wrap-input').checked = outlineWrap;
+  find('.sidebar').dataset.outlineWrap = String(outlineWrap);
   applySidebarWidth();
   document.body.classList.toggle('focus-mode', settings.focus);
   find('.source-pane').hidden = !settings.source;
@@ -1093,8 +1105,9 @@ function applySettings(persist = true) {
   find('#line-height-output').textContent = Number(settings.lineHeight).toFixed(2) + ' 倍';
   find('#paragraph-gap-input').value = settings.paragraphGap;
   find('#paragraph-gap-output').textContent = Number(settings.paragraphGap).toFixed(1) + ' 倍';
-  find('#reading-width-input').value = settings.readingWidth;
-  find('#reading-width-output').textContent = settings.readingWidth + ' px';
+  find('#reading-width-input').value = clampedReadingWidth;
+  find('#reading-width-output').textContent = fullWidth ? '铺满窗口' : clampedReadingWidth + ' px';
+  find('#reading-full-width-input').checked = fullWidth;
   find('#paper-input').checked = settings.paperTexture !== false;
   find('#opacity-input').value = settings.opacity * 100;
   find('#opacity-output').textContent = Math.round(settings.opacity * 100) + '%';
@@ -1137,6 +1150,9 @@ function applySettings(persist = true) {
   const palette = codePalette(codeColorScope, settings.codeColors || {});
   for (const input of document.querySelectorAll('[data-code-color]')) input.value = palette[input.dataset.codeColor];
   sourceEditor.refresh(); richEditor.refresh();
+  for (const item of richEditor.tables.entries.values()) {
+    if (item.active && item.tableView && item.dom.isConnected) richEditor.tables.fitColumns(item);
+  }
   renderSearchResults();
   scrollSync?.refresh();
   scheduleOutlineFollow();
@@ -2017,10 +2033,19 @@ for (const input of document.querySelectorAll('[data-paper-family]')) input.addE
 });
 find('#font-input').addEventListener('input', event => { settings.fontSize = Number(event.target.value); applySettings(); });
 find('#outline-side-input').addEventListener('change', event => { settings.outlineSide = event.target.value; applySettings(); });
+find('#outline-wrap-input').addEventListener('change', event => { settings.outlineWrap = event.target.checked; applySettings(); });
 find('#reading-font-input').addEventListener('change', event => { settings.readingFont = event.target.value; applySettings(); });
 find('#line-height-input').addEventListener('input', event => { settings.lineHeight = Number(event.target.value); applySettings(); });
 find('#paragraph-gap-input').addEventListener('input', event => { settings.paragraphGap = Number(event.target.value); applySettings(); });
-find('#reading-width-input').addEventListener('input', event => { settings.readingWidth = Number(event.target.value); applySettings(); });
+find('#reading-width-input').addEventListener('input', event => {
+  settings.readingWidth = Number(event.target.value);
+  settings.readingFullWidth = false;
+  applySettings();
+});
+find('#reading-full-width-input').addEventListener('change', event => {
+  settings.readingFullWidth = event.target.checked;
+  applySettings();
+});
 find('#paper-input').addEventListener('change', event => { settings.paperTexture = event.target.checked; applySettings(); });
 find('#opacity-input').addEventListener('input', event => { settings.opacity = Number(event.target.value) / 100; applySettings(); });
 find('#sync-input').addEventListener('change', event => { settings.syncScroll = event.target.checked; applySettings(); });
